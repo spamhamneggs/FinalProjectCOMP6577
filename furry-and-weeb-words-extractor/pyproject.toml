@@ -1,0 +1,17 @@
+[project]
+name = "furry-and-weeb-words"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fsspec>=2025.2.0",
+    "gensim>=4.3.3",
+    "huggingface-hub[cli]>=0.28.1",
+    "jax>=0.5.0",
+    "networkx>=3.4.2",
+    "pandas>=2.2.3",
+    "pyarrow>=19.0.0",
+    "scikit-learn>=1.6.1",
+    "spacy>=3.8.4",
+]
