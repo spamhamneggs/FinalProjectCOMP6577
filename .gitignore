@@ -1,3 +1,7 @@
+# Big Files
+bluesky_ten_million_english_only.csv
+subculture_posts_classified.csv
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
