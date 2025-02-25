@@ -149,7 +149,7 @@ class SubculturePostClassifier:
 
         return results
 
-    def classify_posts(self, df, text_column="text", n_jobs=-1, chunk_size=100000):
+    def classify_posts(self, df, text_column="text", n_jobs=-1, chunk_size=100000, temp_dir="./cache"):
         """
         Classify posts in chunks to avoid memory issues and provide better progress tracking.
         """
@@ -160,7 +160,6 @@ class SubculturePostClassifier:
         all_chunk_files = []
         
         # Create a directory for temporary results
-        temp_dir = "./cache"
         os.makedirs(temp_dir, exist_ok=True)
 
         # Format for progress bars
@@ -213,7 +212,17 @@ class SubculturePostClassifier:
                 
                 # Create and save chunk results
                 results_df = pd.DataFrame(all_results)
-                final_chunk_df = pd.concat([chunk_df.reset_index(drop=True), results_df], axis=1)
+                
+                # Only include necessary columns with proper text column handling
+                final_chunk_df = pd.DataFrame({
+                    'text': chunk_df[text_column],
+                    'primary_category': results_df['primary_category'],
+                    'subcategory': results_df['subcategory'],
+                    'weeb_score': results_df['weeb_score'],
+                    'furry_score': results_df['furry_score'],
+                    'top_weeb_terms': results_df['top_weeb_terms'],
+                    'top_furry_terms': results_df['top_furry_terms']
+                })
                 
                 chunk_file = os.path.join(temp_dir, f"classified_chunk_{chunk_idx}.csv")
                 final_chunk_df.to_csv(chunk_file, index=False)
@@ -236,6 +245,7 @@ if __name__ == "__main__":
     logger.info("Loading term analysis data...")
     weeb_terms_data = pd.read_csv("./output/terms-analysis/weeb_terms_analysis.csv")
     furry_terms_data = pd.read_csv("./output/terms-analysis/furry_terms_analysis.csv")
+    temp_dir = "./cache"
 
     # Initialize classifier with smaller batch size for better memory management
     classifier = SubculturePostClassifier(
@@ -252,9 +262,23 @@ if __name__ == "__main__":
     # Classify posts with chunking and parallel processing
     results = classifier.classify_posts(df, n_jobs=4, chunk_size=250000)  # Limit cores and use chunks
 
-    # Save results
+    # Save results with only necessary columns
     logger.info("Saving results...")
     results.to_csv(
-        "./output/subculture-classifier/subculture_posts_classified.csv", index=False
+        "./output/subculture-classifier/subculture_posts_classified.csv",
+        columns=['text', 'primary_category', 'subcategory', 'weeb_score', 'furry_score', 
+                'top_weeb_terms', 'top_furry_terms'],
+        index=False
     )
+    
+    # Clean up temporary chunk files
+    logger.info("Cleaning up temporary files...")
+    chunk_files = [f for f in os.listdir(temp_dir) if f.startswith("classified_chunk_")]
+    for file in chunk_files:
+        try:
+            os.remove(os.path.join(temp_dir, file))
+            logger.debug(f"Removed temporary file: {file}")
+        except Exception as e:
+            logger.warning(f"Failed to remove temporary file {file}: {e}")
+            
     logger.info("Classification process completed successfully")
