@@ -5,7 +5,6 @@ requires-python = ">=3.12"
 members = [
     "comp6577001",
     "dataset-filter",
-    "furry-and-weeb-term-analyzer",
     "subculture-post-classifier",
 ]
 
@@ -366,11 +365,6 @@ wheels = [
 http = [
     { name = "aiohttp" },
 ]
-
-[[package]]
-name = "furry-and-weeb-term-analyzer"
-version = "0.1.0"
-source = { virtual = "furry-and-weeb-terms-analyzer" }
 
 [[package]]
 name = "gensim"
