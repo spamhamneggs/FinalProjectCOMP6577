@@ -246,6 +246,43 @@ class SubcultureTermAnalyzer:
         # Filter for terms that appear more in culture posts
         term_stats = term_stats[term_stats["specificity"] > 0]
         return term_stats.sort_values("specificity", ascending=False)
+    
+    def filter_terms(self, terms_df):
+        """Filter redundant compound terms from results"""
+        filtered_terms = []
+        
+        # Get list of single-word terms for checking compounds
+        all_single_terms = set([t for t in terms_df["term"] if " " not in t])
+        
+        for term in terms_df["term"]:
+            # Keep all single words
+            if " " not in term:
+                filtered_terms.append(term)
+                continue
+            
+            # Split compound terms
+            parts = term.split()
+            
+            # Skip if any part is a seed term
+            if any(part in self.seed_terms for part in parts):
+                continue
+                
+            # Skip if both parts appear individually in the dataset
+            # This catches cases like "furryart art" where both terms appear separately
+            if all(part in all_single_terms for part in parts):
+                continue
+                
+            # Skip terms where one part is contained in the other part
+            # This catches cases like "furryart furryartist"
+            if any(part in other_part and part != other_part 
+                for i, part in enumerate(parts) 
+                for other_part in parts[:i] + parts[i+1:]):
+                continue
+                
+            filtered_terms.append(term)
+        
+        # Return filtered dataframe
+        return terms_df[terms_df["term"].isin(filtered_terms)]
 
     def train_word2vec(self, df):
         """Train Word2Vec and find terms similar to seed terms"""
@@ -315,6 +352,10 @@ class SubcultureTermAnalyzer:
         for seed in tqdm(seed_terms_in_vocab, desc="Finding similar terms"):
             similar = model.wv.most_similar(seed, topn=20)
             for term, score in similar:
+                # Skip compound terms that directly contain seed terms
+                if " " in term and any(seed_term in term.split() for seed_term in self.seed_terms):
+                    continue
+                    
                 # Only keep highest similarity score for each term
                 if term not in similar_terms_dict or score > similar_terms_dict[term]:
                     similar_terms_dict[term] = score
@@ -356,6 +397,9 @@ class SubcultureTermAnalyzer:
         # Get term specificity
         term_stats = self.compute_term_specificity(df)
 
+        # Apply term filtering
+        term_stats = self.filter_terms(term_stats)
+
         # Get word embeddings similarities
         embedding_similarities = self.train_word2vec(df)
 
@@ -396,5 +440,5 @@ if __name__ == "__main__":
         analyzer.analyze()
         logger.info(f"Completed {culture} term analysis")
 
-    analyzer.clear_cache()
+    # analyzer.clear_cache()
     logger.info("All term analysis completed successfully")
