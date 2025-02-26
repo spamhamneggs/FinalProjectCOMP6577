@@ -14,7 +14,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-tqdm.pandas()  # Re-enable progress_apply for pandas
+tqdm.pandas()  # Enable progress_apply for pandas
 
 
 class SubcultureTermAnalyzer:
@@ -32,22 +32,34 @@ class SubcultureTermAnalyzer:
         else:
             raise ValueError(f"Unsupported culture type: {culture_type}")
 
-        # Load spaCy with only necessary components
-        self.nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        # Load spaCy with only necessary components and disable the pipeline we don't need
+        self.nlp = spacy.load(
+            "en_core_web_sm", disable=["parser", "ner", "tagger", "lemmatizer"]
+        )
+        # Increase batch size for pipe processing
+        self.nlp.max_length = 2000000  # Increase max document length
 
-        # Pre-compile regex pattern
-        self.pattern = re.compile("|".join(self.seed_terms), re.IGNORECASE)
+        # Pre-compile regex pattern with word boundaries for more precise matching
+        pattern_terms = [rf"\b{term}\b" for term in self.seed_terms]
+        self.pattern = re.compile("|".join(pattern_terms), re.IGNORECASE)
 
-        # Initialize cache
+        # Initialize cache for text preprocessing
         cache_dir = "./cache/text_preprocessing"
         os.makedirs(cache_dir, exist_ok=True)
-        self.memory = Memory(cache_dir, verbose=0)
+        self.memory = Memory(cache_dir, verbose=0, mmap_mode=None)
         self.cached_preprocess = self.memory.cache(self._preprocess_text)
+
+        # Determine optimal number of workers
+        self.n_workers = os.cpu_count() - 1 or 1  # Leave one CPU free for system
 
     def _preprocess_text(self, text):
         """Internal preprocessing function that will be cached"""
         try:
             if pd.isna(text) or not isinstance(text, str):
+                return ""
+
+            # Skip tokenization for very short texts
+            if len(text) < 3:
                 return ""
 
             doc = self.nlp(text.lower())
@@ -64,7 +76,6 @@ class SubcultureTermAnalyzer:
 
     def preprocess_text(self, text):
         """Wrapper for cached preprocessing"""
-        # Create a hash of the text to use as cache key
         if pd.isna(text) or not isinstance(text, str):
             return ""
         return self.cached_preprocess(text)
@@ -72,18 +83,22 @@ class SubcultureTermAnalyzer:
     def load_data(self):
         """Load data from CSV file"""
         logger.info("Loading dataset...")
-        df = pd.read_csv("./output/dataset-filter/bluesky_ten_million_english_only.csv")
+        # Only load needed columns
+        df = pd.read_csv(
+            "./output/dataset-filter/bluesky_ten_million_english_only.csv",
+            usecols=["text"],  # Only load the text column initially
+        )
         logger.info(f"Loaded {len(df)} English posts")
         return df
 
     def identify_culture_posts(self, df):
         """Identify posts that contain seed terms using compiled regex"""
         logger.info(f"Identifying {self.culture_type}-related posts...")
-        # Use tqdm to show progress
-        tqdm.pandas(desc=f"Identifying {self.culture_type} posts")
-        df[self.culture_column] = df["text"].progress_apply(
-            lambda x: bool(self.pattern.search(x)) if isinstance(x, str) else False
-        )
+
+        # Use vectorized operations instead of apply
+        # Create mask using str.contains with regex
+        df[self.culture_column] = df["text"].str.contains(self.pattern, na=False)
+
         return df
 
     def _preprocess_batch(self, texts):
@@ -99,8 +114,8 @@ class SubcultureTermAnalyzer:
             if not valid_texts:
                 return [""] * len(texts)
 
-            # Process batch using spaCy's pipe
-            docs = self.nlp.pipe(valid_texts)
+            # Process batch using spaCy's pipe with batch_size
+            docs = list(self.nlp.pipe(valid_texts, batch_size=1000))
             processed = [
                 " ".join(
                     token.text
@@ -120,29 +135,33 @@ class SubcultureTermAnalyzer:
             logger.warning(f"Error in batch preprocessing: {str(e)}")
             return [""] * len(texts)
 
-    def batch_process_texts(self, texts, batch_size=10000):
-        """Process texts in larger batches with optimized caching"""
+    def batch_process_texts(self, texts, batch_size=5000):
+        """Process texts in larger batches with optimized caching and parallelization"""
+        # Adjust batch size based on available memory
+        if len(texts) <= batch_size:
+            # Small dataset - process in one batch
+            return pd.Series(self._preprocess_batch(texts.tolist()), index=texts.index)
+
+        # Calculate optimal batch size based on text length
+        avg_len = texts.str.len().mean()
+        if avg_len > 1000:
+            batch_size = max(1000, batch_size // 4)
+
         results = []
         total_batches = len(texts) // batch_size + (
             1 if len(texts) % batch_size > 0 else 0
         )
 
-        with tqdm(total=total_batches, desc="Processing batches") as pbar:
+        # Process batches sequentially
+        with tqdm(total=total_batches, desc="Processing text batches") as pbar:
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size].tolist()
-
-                # Process batch
-                if hasattr(self, "memory"):
-                    processed = self.memory.cache(self._preprocess_batch)(batch)
-                else:
-                    processed = self._preprocess_batch(batch)
-
+                processed = self._preprocess_batch(batch)
                 results.extend(processed)
                 pbar.update(1)
 
-                # Clear some memory
-                del processed
-                if i % (batch_size * 10) == 0:  # GC every 10 batches
+                # Clear some memory periodically
+                if i % (batch_size * 5) == 0:
                     import gc
 
                     gc.collect()
@@ -153,33 +172,60 @@ class SubcultureTermAnalyzer:
         """Compute how specific terms are to culture posts vs non-culture posts"""
         logger.info("Computing term specificity...")
 
+        # Use sampling for large datasets
+        if len(df) > 100000:
+            # Sample equal numbers from both categories for balanced comparison
+            culture_count = df[df[self.culture_column]].shape[0]
+            non_culture_count = df[~df[self.culture_column]].shape[0]
+
+            # Take all culture posts if they're the minority
+            if culture_count < non_culture_count:
+                culture_sample = df[df[self.culture_column]]
+                # Sample the same number of non-culture posts
+                non_culture_sample = df[~df[self.culture_column]].sample(
+                    min(culture_count * 2, non_culture_count), random_state=42
+                )
+            else:
+                non_culture_sample = df[~df[self.culture_column]]
+                culture_sample = df[df[self.culture_column]].sample(
+                    min(non_culture_count * 2, culture_count), random_state=42
+                )
+
+            # Combine samples
+            df_sample = pd.concat([culture_sample, non_culture_sample])
+            logger.info(
+                f"Using balanced sample of {len(df_sample)} posts for TF-IDF analysis"
+            )
+        else:
+            df_sample = df
+
         # Create separate corpora
-        culture_corpus = df[df[self.culture_column]]["cleaned_text"]
-        non_culture_corpus = df[~df[self.culture_column]]["cleaned_text"]
+        culture_corpus = df_sample[df_sample[self.culture_column]]["cleaned_text"]
+        non_culture_corpus = df_sample[~df_sample[self.culture_column]]["cleaned_text"]
 
         # Vectorize both corpora
         vectorizer = TfidfVectorizer(
             max_features=5000,
             ngram_range=(1, 2),
             min_df=10,  # Require terms to appear in at least 10 documents
+            lowercase=False,  # Text already lowercased
         )
 
-        # Fit on entire corpus to get shared vocabulary
+        # Fit on sampled corpus to get shared vocabulary
         logger.info("Fitting TF-IDF vectorizer...")
-        vectorizer.fit(df["cleaned_text"])
+        vectorizer.fit(df_sample["cleaned_text"])
 
-        # Transform both corpora with progress indication
-        logger.info("Transforming culture corpus...")
+        # Transform both corpora
+        logger.info("Transforming corpora and computing specificity...")
         culture_matrix = vectorizer.transform(culture_corpus)
-        logger.info("Transforming non-culture corpus...")
         non_culture_matrix = vectorizer.transform(non_culture_corpus)
 
-        # Compute normalized frequencies
-        culture_freqs = np.array(culture_matrix.sum(axis=0)).flatten() / len(
-            culture_corpus
+        # Use sparse matrix operations
+        culture_freqs = np.asarray(culture_matrix.sum(axis=0)).flatten() / max(
+            1, culture_corpus.shape[0]
         )
-        non_culture_freqs = np.array(non_culture_matrix.sum(axis=0)).flatten() / len(
-            non_culture_corpus
+        non_culture_freqs = np.asarray(non_culture_matrix.sum(axis=0)).flatten() / max(
+            1, non_culture_corpus.shape[0]
         )
 
         # Compute specificity score (ratio of frequencies)
@@ -204,38 +250,74 @@ class SubcultureTermAnalyzer:
     def train_word2vec(self, df):
         """Train Word2Vec and find terms similar to seed terms"""
         logger.info("Training Word2Vec model...")
-        # Prepare sentences with progress bar
-        logger.info("Preparing sentences for Word2Vec...")
-        sentences = [
-            text.split()
-            for text in tqdm(df["cleaned_text"], desc="Preparing Word2Vec data")
-            if text and isinstance(text, str)
-        ]
+
+        # Sample data for Word2Vec if dataset is very large
+        if len(df) > 200000:
+            # Ensure we have enough culture posts in the sample
+            culture_posts = df[df[self.culture_column]]
+            non_culture_posts = df[~df[self.culture_column]]
+
+            # Keep all culture posts if they're less than 50k
+            if len(culture_posts) < 50000:
+                culture_sample = culture_posts
+            else:
+                culture_sample = culture_posts.sample(50000, random_state=42)
+
+            # Sample from non-culture posts
+            non_culture_sample = non_culture_posts.sample(
+                min(len(non_culture_posts), 150000), random_state=42
+            )
+
+            # Combine samples
+            df_sample = pd.concat([culture_sample, non_culture_sample])
+            logger.info(f"Using sample of {len(df_sample)} posts for Word2Vec training")
+        else:
+            df_sample = df
+
+        # More efficient sentence preparation using list comprehension
+        sentences = []
+        for text in tqdm(
+            df_sample["cleaned_text"].dropna(), desc="Preparing Word2Vec data"
+        ):
+            if isinstance(text, str) and text.strip():
+                sentences.append(text.split())
 
         logger.info(f"Training Word2Vec model with {len(sentences)} sentences...")
+
+        # Faster Word2Vec training
         model = Word2Vec(
             sentences,
-            vector_size=1000,
+            vector_size=300,
             window=5,
             min_count=5,
-            workers=os.cpu_count(),
+            workers=self.n_workers,
             sg=1,
+            compute_loss=False,  # Speed up training by not computing loss
         )
 
         # Use a dictionary to keep track of highest similarity scores
         similar_terms_dict = {}
 
-        # Find similar terms to seed terms with progress bar
-        for seed in tqdm(self.seed_terms, desc="Finding similar terms"):
-            if seed in model.wv:
-                similar = model.wv.most_similar(seed, topn=10)
-                for term, score in similar:
-                    # Only keep highest similarity score for each term
-                    if (
-                        term not in similar_terms_dict
-                        or score > similar_terms_dict[term]
-                    ):
-                        similar_terms_dict[term] = score
+        # More efficient similar term finding
+        seed_terms_in_vocab = [seed for seed in self.seed_terms if seed in model.wv]
+
+        if not seed_terms_in_vocab:
+            logger.warning(
+                "No seed terms found in vocabulary. Using most common words instead."
+            )
+            # Use most common words as fallback
+            similar_terms = pd.DataFrame(
+                {"term": model.wv.index_to_key[:20], "similarity": [1.0] * 20}
+            )
+            return similar_terms
+
+        # Find similar terms to seed terms
+        for seed in tqdm(seed_terms_in_vocab, desc="Finding similar terms"):
+            similar = model.wv.most_similar(seed, topn=20)
+            for term, score in similar:
+                # Only keep highest similarity score for each term
+                if term not in similar_terms_dict or score > similar_terms_dict[term]:
+                    similar_terms_dict[term] = score
 
         # Convert to DataFrame
         similar_terms = [(term, score) for term, score in similar_terms_dict.items()]
@@ -246,8 +328,8 @@ class SubcultureTermAnalyzer:
         # Load and preprocess data
         df = self.load_data()
 
-        # Generate cache key based on data
-        cache_file = f"./cache/processed_data_{self.culture_type}.parquet"
+        # Generate cache based on data
+        cache_file = "./cache/processed_data.parquet"
 
         if os.path.exists(cache_file):
             logger.info("Loading preprocessed data from cache...")
@@ -256,13 +338,9 @@ class SubcultureTermAnalyzer:
             logger.info("Processing data and creating cache...")
             logger.info(f"Total rows to process: {len(df)}")
 
-            # Handle NaN values and convert to string before preprocessing
-            nan_count = df["text"].isna().sum()
-            if nan_count > 0:
-                logger.warning(f"Found {nan_count} NaN values in text column")
-                df["text"] = df["text"].fillna("")
+            # Faster NaN handling with vectorized operations
+            df["text"] = df["text"].fillna("")
 
-            df["text"] = df["text"].astype(str)
             logger.info("Starting batch processing...")
             df["cleaned_text"] = self.batch_process_texts(df["text"])
 
@@ -293,6 +371,7 @@ class SubcultureTermAnalyzer:
 
         # Save results
         output_file = f"./output/terms-analysis/{self.culture_type}_terms_analysis.csv"
+        os.makedirs("./output/terms-analysis", exist_ok=True)
         final_terms.sort_values("combined_score", ascending=False).to_csv(
             output_file, index=False
         )
@@ -304,7 +383,7 @@ class SubcultureTermAnalyzer:
         """Clear all cached preprocessing data"""
         logger.info("Clearing preprocessing cache...")
         self.memory.clear()
-        cache_file = f"./cache/processed_data_{self.culture_type}.parquet"
+        cache_file = "./cache/processed_data.parquet"
         if os.path.exists(cache_file):
             os.remove(cache_file)
         logger.info("Cache cleared")
@@ -315,5 +394,7 @@ if __name__ == "__main__":
         logger.info(f"Starting {culture} term analysis...")
         analyzer = SubcultureTermAnalyzer(culture_type=culture)
         analyzer.analyze()
-        analyzer.clear_cache()
         logger.info(f"Completed {culture} term analysis")
+
+    analyzer.clear_cache()
+    logger.info("All term analysis completed successfully")
