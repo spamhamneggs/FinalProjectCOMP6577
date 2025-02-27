@@ -12,6 +12,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def setup_directories(base_dir):
+    """Setup and return common directory paths"""
+    directories = {
+        "temp": os.path.join(base_dir, "temp"),
+        "output": os.path.join(base_dir, "output"),
+    }
+
+    # Create all directories at once
+    for dir_path in directories.values():
+        os.makedirs(dir_path, exist_ok=True)
+
+    return directories
+
+
 def load_and_filter_data(dataset_name, split="train"):
     """Load data from Hugging Face dataset"""
     logger.info("Loading dataset...")
@@ -28,7 +42,10 @@ def load_and_filter_data(dataset_name, split="train"):
 
 
 if __name__ == "__main__":
-    output_dir = "./output"
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dirs = setup_directories(base_dir)
+
+    output_dir = dirs["output"]
 
     dataset_filter_dir = f"{output_dir}/dataset-filter"
     os.makedirs(dataset_filter_dir, exist_ok=True)

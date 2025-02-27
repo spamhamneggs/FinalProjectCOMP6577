@@ -18,11 +18,25 @@ logger = logging.getLogger(__name__)
 tqdm.pandas()  # Enable progress_apply for pandas
 
 
+def setup_directories(base_dir):
+    """Setup and return common directory paths"""
+    directories = {
+        "temp": os.path.join(base_dir, "temp"),
+        "output": os.path.join(base_dir, "output"),
+    }
+
+    # Create all directories at once
+    for dir_path in directories.values():
+        os.makedirs(dir_path, exist_ok=True)
+
+    return directories
+
+
 class SubcultureTermAnalyzer:
-    def __init__(self, culture_type, cache_dir, output_dir):
+    def __init__(self, culture_type, temp_dir, output_dir):
         """Initialize the analyzer with the specified culture type."""
         self.culture_type = culture_type
-        self.cache_dir = cache_dir
+        self.temp_dir = temp_dir
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -48,9 +62,9 @@ class SubcultureTermAnalyzer:
         self.pattern = re.compile("|".join(pattern_terms), re.IGNORECASE)
 
         # Initialize cache for text preprocessing
-        cache_tp_dir = f"{cache_dir}/text_preprocessing"
-        os.makedirs(cache_tp_dir, exist_ok=True)
-        self.memory = Memory(cache_tp_dir, verbose=0, mmap_mode=None)
+        temp_tp_dir = f"{temp_dir}/text_preprocessing"
+        os.makedirs(temp_tp_dir, exist_ok=True)
+        self.memory = Memory(temp_tp_dir, verbose=0, mmap_mode=None)
         self.cached_preprocess = self.memory.cache(self._preprocess_text)
 
         # Determine optimal number of workers
@@ -378,11 +392,11 @@ class SubcultureTermAnalyzer:
         df = self.load_data()
 
         # Generate cache based on data
-        cache_file = f"{self.cache_dir}/processed_data.parquet"
+        temp_file = f"{self.temp_dir}/processed_data.parquet"
 
-        if os.path.exists(cache_file):
+        if os.path.exists(temp_file):
             logger.info("Loading preprocessed data from cache...")
-            df = pd.read_parquet(cache_file)
+            df = pd.read_parquet(temp_file)
         else:
             logger.info("Processing data and creating cache...")
             logger.info(f"Total rows to process: {len(df)}")
@@ -395,9 +409,9 @@ class SubcultureTermAnalyzer:
 
             # Save processed data to cache
             logger.info("Saving processed data to cache...")
-            os.makedirs(self.cache_dir, exist_ok=True)
-            df.to_parquet(cache_file)
-            logger.info(f"Cached processed data to {cache_file}")
+            os.makedirs(self.temp_dir, exist_ok=True)
+            df.to_parquet(temp_file)
+            logger.info(f"Cached processed data to {temp_file}")
 
         # Continue with analysis
         df = self.identify_culture_posts(df)
@@ -436,20 +450,23 @@ class SubcultureTermAnalyzer:
         """Clear all cached preprocessing data"""
         logger.info("Clearing preprocessing cache...")
         self.memory.clear()
-        cache_file = "./cache/processed_data.parquet"
-        if os.path.exists(cache_file):
-            os.remove(cache_file)
+        temp_file = f"{self.temp_dir}/processed_data.parquet"
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
         logger.info("Cache cleared")
 
 
 if __name__ == "__main__":
-    cache_dir = "./cache"
-    output_dir = "./output"
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dirs = setup_directories(base_dir)
+
+    temp_dir = dirs["temp"]
+    output_dir = dirs["output"]
 
     for culture in tqdm(["weeb", "furry"], desc="Analyzing cultures"):
         logger.info(f"Starting {culture} term analysis...")
         analyzer = SubcultureTermAnalyzer(
-            culture_type=culture, cache_dir=cache_dir, output_dir=output_dir
+            culture_type=culture, temp_dir=temp_dir, output_dir=output_dir
         )
         analyzer.analyze()
         logger.info(f"Completed {culture} term analysis")

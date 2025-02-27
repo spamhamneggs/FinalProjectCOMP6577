@@ -19,6 +19,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def setup_directories(base_dir):
+    """Setup and return common directory paths"""
+    directories = {
+        "temp": os.path.join(base_dir, "temp"),
+        "output": os.path.join(base_dir, "output"),
+    }
+
+    # Create all directories at once
+    for dir_path in directories.values():
+        os.makedirs(dir_path, exist_ok=True)
+
+    return directories
+
+
 class PostCategory(Enum):
     NORMIE = "normie"
     WEEB = "weeb"
@@ -167,7 +181,7 @@ class SubculturePostClassifier:
     def classify_posts(
         self,
         df,
-        cache_dir,
+        temp_dir,
         text_column="text",
         n_jobs=-1,
         chunk_size=100000,
@@ -182,7 +196,7 @@ class SubculturePostClassifier:
         all_chunk_files = []
 
         # Create a directory for temporary results
-        os.makedirs(cache_dir, exist_ok=True)
+        os.makedirs(temp_dir, exist_ok=True)
 
         # Format for progress bars
         bar_format = (
@@ -259,7 +273,7 @@ class SubculturePostClassifier:
                 )
 
                 chunk_file = os.path.join(
-                    cache_dir, f"classified_chunk_{chunk_idx}.csv"
+                    temp_dir, f"classified_chunk_{chunk_idx}.csv"
                 )
                 final_chunk_df.to_csv(chunk_file, index=False)
                 all_chunk_files.append(chunk_file)
@@ -279,8 +293,11 @@ class SubculturePostClassifier:
 
 
 if __name__ == "__main__":
-    cache_dir = "./cache"
-    output_dir = "./output"
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dirs = setup_directories(base_dir)
+
+    temp_dir = dirs["temp"]
+    output_dir = dirs["output"]
 
     logger.info("Starting classification process...")
     os.makedirs(output_dir, exist_ok=True)
@@ -308,7 +325,7 @@ if __name__ == "__main__":
 
     # Classify posts with chunking and parallel processing
     results = classifier.classify_posts(
-        df, cache_dir, n_jobs=os.cpu_count() - 1 or 1, chunk_size=250000
+        df, temp_dir, n_jobs=os.cpu_count() - 1 or 1, chunk_size=250000
     )  # Limit cores and use chunks
 
     # Save results with only necessary columns
@@ -330,11 +347,11 @@ if __name__ == "__main__":
     # Clean up temporary chunk files
     logger.info("Cleaning up temporary files...")
     chunk_files = [
-        f for f in os.listdir(cache_dir) if f.startswith("classified_chunk_")
+        f for f in os.listdir(temp_dir) if f.startswith("classified_chunk_")
     ]
     for file in chunk_files:
         try:
-            os.remove(os.path.join(cache_dir, file))
+            os.remove(os.path.join(temp_dir, file))
             logger.debug(f"Removed temporary file: {file}")
         except Exception as e:
             logger.warning(f"Failed to remove temporary file {file}: {e}")
