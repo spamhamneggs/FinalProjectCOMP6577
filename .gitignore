@@ -2,8 +2,8 @@
 bluesky_ten_million_english_only.csv
 subculture_posts_classified.csv
 
-# Local Cache and Output
-cache/
+# Local Temp Folder and Output
+temp/
 output/
 
 # Byte-compiled / optimized / DLL files

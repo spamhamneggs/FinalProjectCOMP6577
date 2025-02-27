@@ -298,7 +298,10 @@ if __name__ == "__main__":
     output_dir = dirs["output"]
 
     logger.info("Starting classification process...")
-    os.makedirs(output_dir, exist_ok=True)
+
+    # Create output directories
+    classifier_output_dir = f"{output_dir}/subculture-classifier"
+    os.makedirs(classifier_output_dir, exist_ok=True)
 
     # Load term analysis results
     logger.info("Loading term analysis data...")
