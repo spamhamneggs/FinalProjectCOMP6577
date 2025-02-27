@@ -272,9 +272,7 @@ class SubculturePostClassifier:
                     }
                 )
 
-                chunk_file = os.path.join(
-                    temp_dir, f"classified_chunk_{chunk_idx}.csv"
-                )
+                chunk_file = os.path.join(temp_dir, f"classified_chunk_{chunk_idx}.csv")
                 final_chunk_df.to_csv(chunk_file, index=False)
                 all_chunk_files.append(chunk_file)
 
@@ -346,9 +344,7 @@ if __name__ == "__main__":
 
     # Clean up temporary chunk files
     logger.info("Cleaning up temporary files...")
-    chunk_files = [
-        f for f in os.listdir(temp_dir) if f.startswith("classified_chunk_")
-    ]
+    chunk_files = [f for f in os.listdir(temp_dir) if f.startswith("classified_chunk_")]
     for file in chunk_files:
         try:
             os.remove(os.path.join(temp_dir, file))
