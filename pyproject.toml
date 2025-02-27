@@ -14,3 +14,8 @@ dependencies = [
 
 [tool.uv.workspace]
 members = [ "furry-and-weeb-terms-analyzer/", "subculture-post-classifier/" , "dataset-filter"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.7",
+]

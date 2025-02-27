@@ -2,8 +2,9 @@
 bluesky_ten_million_english_only.csv
 subculture_posts_classified.csv
 
-# Cache
+# Local Cache and Output
 cache/
+output/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

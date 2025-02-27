@@ -1,13 +1,14 @@
-import spacy
-import pandas as pd
-import numpy as np
-from gensim.models import Word2Vec
-from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
-from tqdm import tqdm
-import re
 import os
+import re
+
+import numpy as np
+import pandas as pd
+import spacy
+from gensim.models import Word2Vec
 from joblib import Memory
+from sklearn.feature_extraction.text import TfidfVectorizer
+from tqdm import tqdm
 
 # Configure logging and enable tqdm for pandas
 logging.basicConfig(
@@ -18,9 +19,12 @@ tqdm.pandas()  # Enable progress_apply for pandas
 
 
 class SubcultureTermAnalyzer:
-    def __init__(self, culture_type="weeb"):
+    def __init__(self, culture_type, cache_dir, output_dir):
         """Initialize the analyzer with the specified culture type."""
         self.culture_type = culture_type
+        self.cache_dir = cache_dir
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
 
         # Set seed terms based on culture type
         if culture_type == "weeb":
@@ -44,9 +48,9 @@ class SubcultureTermAnalyzer:
         self.pattern = re.compile("|".join(pattern_terms), re.IGNORECASE)
 
         # Initialize cache for text preprocessing
-        cache_dir = "./cache/text_preprocessing"
-        os.makedirs(cache_dir, exist_ok=True)
-        self.memory = Memory(cache_dir, verbose=0, mmap_mode=None)
+        cache_tp_dir = f"{cache_dir}/text_preprocessing"
+        os.makedirs(cache_tp_dir, exist_ok=True)
+        self.memory = Memory(cache_tp_dir, verbose=0, mmap_mode=None)
         self.cached_preprocess = self.memory.cache(self._preprocess_text)
 
         # Determine optimal number of workers
@@ -85,7 +89,7 @@ class SubcultureTermAnalyzer:
         logger.info("Loading dataset...")
         # Only load needed columns
         df = pd.read_csv(
-            "./output/dataset-filter/bluesky_ten_million_english_only.csv",
+            f"{self.output_dir}/dataset-filter/bluesky_ten_million_english_only.csv",
             usecols=["text"],  # Only load the text column initially
         )
         logger.info(f"Loaded {len(df)} English posts")
@@ -246,41 +250,43 @@ class SubcultureTermAnalyzer:
         # Filter for terms that appear more in culture posts
         term_stats = term_stats[term_stats["specificity"] > 0]
         return term_stats.sort_values("specificity", ascending=False)
-    
+
     def filter_terms(self, terms_df):
         """Filter redundant compound terms from results"""
         filtered_terms = []
-        
+
         # Get list of single-word terms for checking compounds
         all_single_terms = set([t for t in terms_df["term"] if " " not in t])
-        
+
         for term in terms_df["term"]:
             # Keep all single words
             if " " not in term:
                 filtered_terms.append(term)
                 continue
-            
+
             # Split compound terms
             parts = term.split()
-            
+
             # Skip if any part is a seed term
             if any(part in self.seed_terms for part in parts):
                 continue
-                
+
             # Skip if both parts appear individually in the dataset
             # This catches cases like "furryart art" where both terms appear separately
             if all(part in all_single_terms for part in parts):
                 continue
-                
+
             # Skip terms where one part is contained in the other part
             # This catches cases like "furryart furryartist"
-            if any(part in other_part and part != other_part 
-                for i, part in enumerate(parts) 
-                for other_part in parts[:i] + parts[i+1:]):
+            if any(
+                part in other_part and part != other_part
+                for i, part in enumerate(parts)
+                for other_part in parts[:i] + parts[i + 1 :]
+            ):
                 continue
-                
+
             filtered_terms.append(term)
-        
+
         # Return filtered dataframe
         return terms_df[terms_df["term"].isin(filtered_terms)]
 
@@ -353,9 +359,11 @@ class SubcultureTermAnalyzer:
             similar = model.wv.most_similar(seed, topn=20)
             for term, score in similar:
                 # Skip compound terms that directly contain seed terms
-                if " " in term and any(seed_term in term.split() for seed_term in self.seed_terms):
+                if " " in term and any(
+                    seed_term in term.split() for seed_term in self.seed_terms
+                ):
                     continue
-                    
+
                 # Only keep highest similarity score for each term
                 if term not in similar_terms_dict or score > similar_terms_dict[term]:
                     similar_terms_dict[term] = score
@@ -370,7 +378,7 @@ class SubcultureTermAnalyzer:
         df = self.load_data()
 
         # Generate cache based on data
-        cache_file = "./cache/processed_data.parquet"
+        cache_file = f"{self.cache_dir}/processed_data.parquet"
 
         if os.path.exists(cache_file):
             logger.info("Loading preprocessed data from cache...")
@@ -387,7 +395,7 @@ class SubcultureTermAnalyzer:
 
             # Save processed data to cache
             logger.info("Saving processed data to cache...")
-            os.makedirs("./cache", exist_ok=True)
+            os.makedirs(self.cache_dir, exist_ok=True)
             df.to_parquet(cache_file)
             logger.info(f"Cached processed data to {cache_file}")
 
@@ -414,8 +422,9 @@ class SubcultureTermAnalyzer:
         )
 
         # Save results
-        output_file = f"./output/terms-analysis/{self.culture_type}_terms_analysis.csv"
-        os.makedirs("./output/terms-analysis", exist_ok=True)
+        terms_analysis_dir = f"{self.output_dir}/terms-analysis"
+        output_file = f"{terms_analysis_dir}/{self.culture_type}_terms_analysis.csv"
+        os.makedirs(terms_analysis_dir, exist_ok=True)
         final_terms.sort_values("combined_score", ascending=False).to_csv(
             output_file, index=False
         )
@@ -434,11 +443,16 @@ class SubcultureTermAnalyzer:
 
 
 if __name__ == "__main__":
+    cache_dir = "./cache"
+    output_dir = "./output"
+
     for culture in tqdm(["weeb", "furry"], desc="Analyzing cultures"):
         logger.info(f"Starting {culture} term analysis...")
-        analyzer = SubcultureTermAnalyzer(culture_type=culture)
+        analyzer = SubcultureTermAnalyzer(
+            culture_type=culture, cache_dir=cache_dir, output_dir=output_dir
+        )
         analyzer.analyze()
         logger.info(f"Completed {culture} term analysis")
 
-    # analyzer.clear_cache()
+    analyzer.clear_cache()
     logger.info("All term analysis completed successfully")

@@ -1,14 +1,15 @@
+import logging
+import math
+import os
+import re
+from dataclasses import dataclass
+from enum import Enum
+
 import pandas as pd
+from joblib import Parallel, delayed
 from sklearn.feature_extraction.text import CountVectorizer
 from spacy.lang.en import stop_words
-import logging
-from enum import Enum
-from dataclasses import dataclass
 from tqdm.auto import tqdm
-import math
-import re
-from joblib import Parallel, delayed
-import os
 
 # Configure logging
 logging.basicConfig(
@@ -164,7 +165,12 @@ class SubculturePostClassifier:
         return results
 
     def classify_posts(
-        self, df, text_column="text", n_jobs=-1, chunk_size=100000, temp_dir="./cache"
+        self,
+        df,
+        cache_dir,
+        text_column="text",
+        n_jobs=-1,
+        chunk_size=100000,
     ):
         """
         Classify posts in chunks to avoid memory issues and provide better progress tracking.
@@ -176,7 +182,7 @@ class SubculturePostClassifier:
         all_chunk_files = []
 
         # Create a directory for temporary results
-        os.makedirs(temp_dir, exist_ok=True)
+        os.makedirs(cache_dir, exist_ok=True)
 
         # Format for progress bars
         bar_format = (
@@ -252,7 +258,9 @@ class SubculturePostClassifier:
                     }
                 )
 
-                chunk_file = os.path.join(temp_dir, f"classified_chunk_{chunk_idx}.csv")
+                chunk_file = os.path.join(
+                    cache_dir, f"classified_chunk_{chunk_idx}.csv"
+                )
                 final_chunk_df.to_csv(chunk_file, index=False)
                 all_chunk_files.append(chunk_file)
 
@@ -271,13 +279,20 @@ class SubculturePostClassifier:
 
 
 if __name__ == "__main__":
+    cache_dir = "./cache"
+    output_dir = "./output"
+
     logger.info("Starting classification process...")
+    os.makedirs(output_dir, exist_ok=True)
 
     # Load term analysis results
     logger.info("Loading term analysis data...")
-    weeb_terms_data = pd.read_csv("./output/terms-analysis/weeb_terms_analysis.csv")
-    furry_terms_data = pd.read_csv("./output/terms-analysis/furry_terms_analysis.csv")
-    temp_dir = "./cache"
+    weeb_terms_data = pd.read_csv(
+        f"{output_dir}/terms-analysis/weeb_terms_analysis.csv"
+    )
+    furry_terms_data = pd.read_csv(
+        f"{output_dir}/terms-analysis/furry_terms_analysis.csv"
+    )
 
     # Initialize classifier with smaller batch size for better memory management
     classifier = SubculturePostClassifier(
@@ -286,18 +301,20 @@ if __name__ == "__main__":
 
     # Load posts from dataset
     logger.info("Loading dataset...")
-    df = pd.read_csv("./output/dataset-filter/bluesky_ten_million_english_only.csv")
+    df = pd.read_csv(
+        f"{output_dir}/dataset-filter/bluesky_ten_million_english_only.csv"
+    )
     logger.info(f"Loaded {len(df)} English posts")
 
     # Classify posts with chunking and parallel processing
     results = classifier.classify_posts(
-        df, n_jobs=4, chunk_size=250000
+        df, cache_dir, n_jobs=os.cpu_count() - 1 or 1, chunk_size=250000
     )  # Limit cores and use chunks
 
     # Save results with only necessary columns
     logger.info("Saving results...")
     results.to_csv(
-        "./output/subculture-classifier/subculture_posts_classified.csv",
+        f"{output_dir}/subculture-classifier/subculture_posts_classified.csv",
         columns=[
             "text",
             "primary_category",
@@ -312,10 +329,12 @@ if __name__ == "__main__":
 
     # Clean up temporary chunk files
     logger.info("Cleaning up temporary files...")
-    chunk_files = [f for f in os.listdir(temp_dir) if f.startswith("classified_chunk_")]
+    chunk_files = [
+        f for f in os.listdir(cache_dir) if f.startswith("classified_chunk_")
+    ]
     for file in chunk_files:
         try:
-            os.remove(os.path.join(temp_dir, file))
+            os.remove(os.path.join(cache_dir, file))
             logger.debug(f"Removed temporary file: {file}")
         except Exception as e:
             logger.warning(f"Failed to remove temporary file {file}: {e}")

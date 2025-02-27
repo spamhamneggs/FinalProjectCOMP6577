@@ -1,6 +1,8 @@
+import logging
+import os
+
 import pandas as pd
 from datasets import load_dataset
-import logging
 
 # Configure logging
 logging.basicConfig(
@@ -26,11 +28,16 @@ def load_and_filter_data(dataset_name, split="train"):
 
 
 if __name__ == "__main__":
+    output_dir = "./output"
+
+    dataset_filter_dir = f"{output_dir}/dataset-filter"
+    os.makedirs(dataset_filter_dir, exist_ok=True)
+
     results = load_and_filter_data("Roronotalt/bluesky-ten-million")
 
     # Save results
     logger.info("Saving results...")
     results.to_csv(
-        "./output/dataset-filter/bluesky_ten_million_english_only.csv", index=False
+        f"{dataset_filter_dir}/bluesky_ten_million_english_only.csv", index=False
     )
     logger.info("Results saved to bluesky_ten_million_english_only.csv")

@@ -1,0 +1,10 @@
+TODO(shne):
+
+- "Standardise" all scripts [v]
+  - Make directory if it doesn't exist (use os) [v]
+  - Make scripts look approximately the same [v]
+- Add script READMEs []
+  - Add Documentation []
+- Update Project README []
+- Implement finetuning code of Mistral 3 Small []
+- Implement MVP Program []
