@@ -350,6 +350,7 @@ if __name__ == "__main__":
     if os.path.exists(temp_dir):
         try:
             import shutil
+
             shutil.rmtree(temp_dir)
             logger.debug("Removed temporary directory and its contents")
         except Exception as e:

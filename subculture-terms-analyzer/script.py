@@ -42,10 +42,26 @@ class SubcultureTermAnalyzer:
 
         # Set seed terms based on culture type
         if culture_type == "weeb":
-            self.seed_terms = {"anime", "manga", "otaku", "waifu", "weeb", "kawaii", "アニメ"}
+            self.seed_terms = {
+                "anime",
+                "manga",
+                "otaku",
+                "waifu",
+                "weeb",
+                "kawaii",
+                "アニメ",
+            }
             self.culture_column = "is_weeb"
         elif culture_type == "furry":
-            self.seed_terms = {"furry", "fursuit", "uwu", "owo", "paws", "fursona", ":3"}
+            self.seed_terms = {
+                "furry",
+                "fursuit",
+                "uwu",
+                "owo",
+                "paws",
+                "fursona",
+                ":3",
+            }
             self.culture_column = "is_furry"
         else:
             raise ValueError(f"Unsupported culture type: {culture_type}")
@@ -84,32 +100,33 @@ class SubcultureTermAnalyzer:
                 return ""
 
             text = text.lower()
-            
+
             # Patterns for different types of cultural markers
             patterns = {
-                'emoticons': r'[:;><=][-~]?[3DOoPp)(|\\/]',  # :3, >w<, etc
-                'kaomoji': r'[\(\[]\s*[;:=]\s*[_-]?\s*[\)\]]',  # (: :) etc
-                'text_faces': r'[◕ᴥ◕✿]',  # Unicode face components
-                'cjk': r'[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]+'  # CJK characters
+                "emoticons": r"[:;><=][-~]?[3DOoPp)(|\\/]",  # :3, >w<, etc
+                "kaomoji": r"[\(\[]\s*[;:=]\s*[_-]?\s*[\)\]]",  # (: :) etc
+                "text_faces": r"[◕ᴥ◕✿]",  # Unicode face components
+                "cjk": r"[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]+",  # CJK characters
             }
-            
+
             # Check if text consists entirely of special patterns
-            full_pattern = '|'.join(patterns.values())
-            if re.match(f'^({full_pattern})$', text):
+            full_pattern = "|".join(patterns.values())
+            if re.match(f"^({full_pattern})$", text):
                 return text
-                
+
             # For longer texts, process normally but preserve special patterns
             doc = self.nlp(text)
             processed_tokens = []
-            
+
             for token in doc:
                 # Keep token if it matches any pattern or is a regular word
-                if (any(re.match(pattern, token.text) for pattern in patterns.values()) or 
-                    (not token.is_stop and not token.is_punct and token.text.strip())):
+                if any(
+                    re.match(pattern, token.text) for pattern in patterns.values()
+                ) or (not token.is_stop and not token.is_punct and token.text.strip()):
                     processed_tokens.append(token.text)
-                    
-            return ' '.join(processed_tokens)
-            
+
+            return " ".join(processed_tokens)
+
         except Exception as e:
             logger.warning(f"Error preprocessing text: {str(e)}")
             return ""
@@ -174,12 +191,12 @@ class SubcultureTermAnalyzer:
 
         # Patterns for cultural markers
         patterns = {
-            'emoticons': r'[:;><=][-~]?[3DOoPp)(|\\/]',  # :3, >w<, etc
-            'kaomoji': r'[\(\[]\s*[;:=]\s*[_-]?\s*[\)\]]',  # (: :) etc
-            'text_faces': r'[◕ᴥ◕✿]',  # Unicode face components
-            'cjk': r'[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]+'  # CJK characters
+            "emoticons": r"[:;><=][-~]?[3DOoPp)(|\\/]",  # :3, >w<, etc
+            "kaomoji": r"[\(\[]\s*[;:=]\s*[_-]?\s*[\)\]]",  # (: :) etc
+            "text_faces": r"[◕ᴥ◕✿]",  # Unicode face components
+            "cjk": r"[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]+",  # CJK characters
         }
-        full_pattern = '|'.join(patterns.values())
+        full_pattern = "|".join(patterns.values())
 
         # Pre-filter invalid texts but preserve cultural markers
         valid_texts = []
@@ -187,12 +204,12 @@ class SubcultureTermAnalyzer:
             if not isinstance(text, str) or pd.isna(text):
                 valid_texts.append("")
                 continue
-                
+
             text = text.lower()
             # Keep text if it's either:
             # 1. Contains cultural markers (emoticons, CJK, etc.)
             # 2. Is a normal text of sufficient length
-            if (re.search(full_pattern, text) or len(text) > 3):
+            if re.search(full_pattern, text) or len(text) > 3:
                 valid_texts.append(text)
             else:
                 valid_texts.append("")
@@ -204,18 +221,19 @@ class SubcultureTermAnalyzer:
         docs = self.nlp.pipe(
             valid_texts,
             batch_size=min(len(valid_texts), 1000),
-            n_process=1  # Disable multiprocessing within spaCy
+            n_process=1,  # Disable multiprocessing within spaCy
         )
 
         # Create mapping of original indices to processed texts
         processed = []
-        
+
         for doc in docs:
             # Keep cultural markers and regular tokens
             tokens = []
             for token in doc:
-                if (re.match(full_pattern, token.text) or 
-                    (not token.is_stop and not token.is_punct and token.text.strip())):
+                if re.match(full_pattern, token.text) or (
+                    not token.is_stop and not token.is_punct and token.text.strip()
+                ):
                     tokens.append(token.text)
             processed.append(" ".join(tokens) if tokens else "")
 
@@ -649,10 +667,11 @@ class SubcultureTermAnalyzer:
         """Clear all cached preprocessing data"""
         logger.info("Clearing preprocessing cache...")
         self.memory.clear()
-        
+
         if os.path.exists(self.temp_dir):
             try:
                 import shutil
+
                 shutil.rmtree(self.temp_dir)
                 logger.debug("Removed temporary directory and its contents")
             except Exception as e:
