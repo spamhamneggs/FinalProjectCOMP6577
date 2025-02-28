@@ -48,15 +48,20 @@ class CategoryScores:
 
 class SubculturePostClassifier:
     def __init__(
-        self, weeb_terms_data, furry_terms_data, threshold=0.6, batch_size=5000
+        self,
+        weeb_terms_data,
+        furry_terms_data,
+        threshold=0.3,
+        subthreshold=0.5,
+        batch_size=5000,
     ):
         logger.info("Initializing classifier...")
         self.stop_words = set(stop_words.STOP_WORDS)
         self.tokenize_pattern = re.compile(r"\b\w+\b")
         self.threshold = threshold
+        self.subthreshold = subthreshold
         self.batch_size = batch_size
 
-        # Process terms for each category
         self.weeb_terms = self._process_terms(weeb_terms_data, PostCategory.WEEB)
         self.furry_terms = self._process_terms(furry_terms_data, PostCategory.FURRY)
 
@@ -148,9 +153,7 @@ class SubculturePostClassifier:
                 if weeb_score > self.threshold:
                     primary_category = PostCategory.WEEB
                     subcategory = (
-                        PostCategory.FURRY
-                        if furry_score > self.threshold * 0.8
-                        else None
+                        PostCategory.FURRY if furry_score > self.subthreshold else None
                     )
                 else:
                     primary_category = PostCategory.NORMIE
@@ -159,7 +162,7 @@ class SubculturePostClassifier:
                 if furry_score > self.threshold:
                     primary_category = PostCategory.FURRY
                     subcategory = (
-                        PostCategory.WEEB if weeb_score > self.threshold * 0.8 else None
+                        PostCategory.WEEB if weeb_score > self.subthreshold else None
                     )
                 else:
                     primary_category = PostCategory.NORMIE
