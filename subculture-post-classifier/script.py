@@ -347,12 +347,13 @@ if __name__ == "__main__":
 
     # Clean up temporary chunk files
     logger.info("Cleaning up temporary files...")
-    chunk_files = [f for f in os.listdir(temp_dir) if f.startswith("classified_chunk_")]
-    for file in chunk_files:
+    if os.path.exists(temp_dir):
         try:
-            os.remove(os.path.join(temp_dir, file))
-            logger.debug(f"Removed temporary file: {file}")
+            import shutil
+            shutil.rmtree(temp_dir)
+            logger.debug("Removed temporary directory and its contents")
         except Exception as e:
-            logger.warning(f"Failed to remove temporary file {file}: {e}")
+            logger.warning(f"Failed to remove temporary directory: {str(e)}")
+    logger.info("Cache cleared")
 
     logger.info("Classification process completed successfully")
