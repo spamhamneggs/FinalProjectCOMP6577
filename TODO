@@ -1,8 +1,6 @@
 TODO(shne):
 
-- "Standardise" all scripts [v]
-  - Make directory if it doesn't exist (use os) [v]
-  - Make scripts look approximately the same [v]
+- Reimplement subculture-post-classifier []
 - Add script READMEs []
   - Add Documentation []
 - Update Project README []
