@@ -70,7 +70,7 @@ def load_data(file_path):
     return df
 
 
-@lru_cache(maxsize=1000)
+@lru_cache(maxsize=1024)
 def get_term_docs(term_idx, X):
     """Get documents containing a specific term (cached)"""
     return set(X[:, term_idx].nonzero()[0])
