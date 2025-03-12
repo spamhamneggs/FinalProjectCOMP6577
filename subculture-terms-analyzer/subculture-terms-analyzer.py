@@ -1,7 +1,6 @@
 import json
 import os
 import re
-from collections import defaultdict
 from functools import lru_cache
 
 import jax.numpy as jnp
@@ -9,8 +8,7 @@ import jax.random as random
 import nltk
 import numpy as np
 import pandas as pd
-from nltk import FreqDist
-from nltk.corpus import stopwords, twitter_samples, webtext
+from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from scipy.stats import entropy
 from sklearn.decomposition import LatentDirichletAllocation, MiniBatchNMF
@@ -24,8 +22,6 @@ from sklearn.preprocessing import MinMaxScaler
 nltk.download("punkt", quiet=True)
 nltk.download("punkt_tab", quiet=True)
 nltk.download("stopwords", quiet=True)
-nltk.download("webtext", quiet=True)
-nltk.download("twitter_samples", quiet=True)
 
 # Create output directories
 os.makedirs("output", exist_ok=True)
@@ -72,6 +68,12 @@ def load_data(file_path):
     # Remove rows with empty text
     df = df[df["text"].notna()]
     return df
+
+# 
+@lru_cache(maxsize=1000)
+def get_term_docs(term_idx, X):
+    """Get documents containing a specific term (cached)"""
+    return set(X[:, term_idx].nonzero()[0])
 
 
 # Text preprocessing
@@ -137,53 +139,18 @@ def extract_features(texts, max_features=5000, min_df=20, max_df=0.90):
     return X, vectorizer, feature_names
 
 
-def train_models(X, feature_names, n_topics=20, batch_size=2048):
-    print("Training LDA and NMF models...")
-
-    # Train LDA model
-    lda = LatentDirichletAllocation(
-        n_components=n_topics,
-        learning_method="batch",
-        max_iter=20,
-        random_state=42,
-        n_jobs=-1,
-        verbose=1,
-        evaluate_every=2,
-    )
-
-    # Train MiniBatch NMF model
-    nmf = MiniBatchNMF(
-        n_components=n_topics,
-        init="nndsvd",
-        batch_size=batch_size,
-        random_state=42,
-        max_iter=200,
-        verbose=0,
-    )
-
-    print("Fitting LDA...")
-    lda.fit(X)
-    print("Fitting MiniBatch NMF...")
-    nmf.fit(X)
-
-    # Get topic-word matrices
-    lda_topic_word = lda.components_
-    nmf_topic_word = nmf.components_
-
-    # Normalize NMF components for comparison with LDA
-    nmf_topic_word = nmf_topic_word / jnp.sum(nmf_topic_word, axis=1)[:, jnp.newaxis]
-
-    return (lda, nmf), (lda_topic_word, nmf_topic_word)
-
-
 def combine_topic_matrices(lda_matrix, nmf_matrix, alpha=0.5):
     """Combine LDA and NMF topic-word matrices with adaptive weighting"""
     # Add confidence scoring
-    lda_confidence = np.mean(np.max(lda_matrix, axis=1))
-    nmf_confidence = np.mean(np.max(nmf_matrix, axis=1))
+    lda_confidence = jnp.mean(jnp.max(jnp.asarray(lda_matrix), axis=1))
+    nmf_confidence = jnp.mean(jnp.max(jnp.asarray(nmf_matrix), axis=1))
+
+    # Extract scalar values using .item()
+    lda_conf_val = lda_confidence.item()
+    nmf_conf_val = nmf_confidence.item()
 
     # Adjust alpha based on confidence scores
-    alpha = lda_confidence / (lda_confidence + nmf_confidence)
+    alpha = lda_conf_val / (lda_conf_val + nmf_conf_val + 1e-10)
 
     return alpha * lda_matrix + (1 - alpha) * nmf_matrix
 
@@ -227,404 +194,94 @@ def calculate_topic_diversity(topic_word_matrix, top_n=10):
 
 
 # Helper functions for term identification
-def calculate_term_specificity(term_idx, X, general_corpus=None):
-    """Compare term frequency in dataset vs general language corpus"""
-    # Higher scores mean more specific to the dataset
-    if general_corpus is not None:
-        dataset_freq = X[:, term_idx].sum() / X.sum()
-        return dataset_freq / (general_corpus[term_idx] + 1e-10)
-    else:
-        # Fallback to document frequency as a proxy for specificity
-        return np.log(X.shape[0] / (X[:, term_idx].getnnz() + 1))
+def calculate_term_specificity(term_idx, X, seed_docs_indices=None):
+    """Calculate how specific a term is to subculture vs. general usage in the dataset"""
+    # Get all documents containing this term
+    term_docs = get_term_docs(term_idx, X)
+
+    if not term_docs:
+        return 0.0
+
+    # If no seed docs provided, fall back to document frequency as a proxy
+    if seed_docs_indices is None:
+        return np.log(X.shape[0] / (len(term_docs) + 1))
+
+    # Calculate the term's frequency in seed documents vs. overall
+    seed_docs_set = set(seed_docs_indices)
+    seed_docs_with_term = seed_docs_set.intersection(term_docs)
+
+    # Avoid division by zero
+    if not seed_docs_set or not seed_docs_with_term:
+        return 0.0
+
+    # Calculate concentration ratio (how much more common in seed docs vs overall)
+    seed_concentration = len(seed_docs_with_term) / len(seed_docs_set)
+    overall_concentration = len(term_docs) / X.shape[0]
+
+    # Return ratio of concentrations (higher = more specific to subculture)
+    return seed_concentration / (overall_concentration + 1e-10)
 
 
-def calculate_domain_specificity(term, similarity_score, general_corpus):
-    """Calculate domain-specific similarity with penalties for common terms"""
-    # Get the term's frequency in general corpus (defaults to 0 if not present)
-    general_freq = general_corpus.get(term, 0)
-
-    # Apply graduated penalty based on frequency in general corpus
-    # For very common terms (high frequency), penalty is stronger
-    # For rare terms (low frequency), penalty is minimal
-    penalty_factor = max(0.3, 1.0 - (general_freq * 200))
-
-    return similarity_score * penalty_factor
-
-
-def calculate_entropy(term_idx, X):
-    """Calculate entropy of term distribution across documents using sparse operations"""
-    # Get term frequency across documents (keeping sparse)
-    term_docs = X[:, term_idx].nonzero()[0]
-
-    # If no occurrences, return 0
-    if len(term_docs) == 0:
-        return 0
-
-    # Count occurrences in each document (still sparse)
-    term_freqs = X[term_docs, term_idx].toarray().flatten()
-
-    # Normalize and calculate entropy
-    term_freqs = term_freqs / term_freqs.sum()
-    return entropy(term_freqs)
-
-
-# Identify furry and weeb terms from topics
-def identify_subculture_terms(topic_word_matrix, feature_names, X):
-    print("Identifying subculture terms...")
-    num_topics = topic_word_matrix.shape[0]
-
-    # Convert feature_names to list for efficient lookups
-    feature_names_list = list(feature_names)
-    feature_names_dict = {term: idx for idx, term in enumerate(feature_names_list)}
-
-    # Create vectors for seed terms in topic space
-    weeb_seed_vector = np.zeros(num_topics)
-    furry_seed_vector = np.zeros(num_topics)
-
-    # Calculate average topic distribution for seed terms
-    weeb_seed_count = 0
-    furry_seed_count = 0
-
-    for seed_term in weeb_seed_terms:
-        if seed_term in feature_names_dict:
-            term_idx = feature_names_dict[seed_term]
-            # Find which topics this seed term appears in significantly
-            for topic_idx in range(num_topics):
-                weeb_seed_vector[topic_idx] += topic_word_matrix[topic_idx][term_idx]
-            weeb_seed_count += 1
-
-    for seed_term in furry_seed_terms:
-        if seed_term in feature_names_dict:
-            term_idx = feature_names_dict[seed_term]
-            # Find which topics this seed term appears in significantly
-            for topic_idx in range(num_topics):
-                furry_seed_vector[topic_idx] += topic_word_matrix[topic_idx][term_idx]
-            furry_seed_count += 1
-
-    # Normalize seed vectors
-    if weeb_seed_count > 0:
-        weeb_seed_vector /= weeb_seed_count
-    if furry_seed_count > 0:
-        furry_seed_vector /= furry_seed_count
-
-    # Calculate seed vector distance for measuring distinctness
-    seed_vector_distance = cosine_similarity([weeb_seed_vector], [furry_seed_vector])[
-        0
-    ][0]
-    print(f"Seed vector similarity: {seed_vector_distance:.4f}")
-
-    # Create a general usage vector in topic space instead of term space
-    print("Calculating general usage vector...")
-    general_usage_vector = np.zeros(num_topics)
-    doc_topic_distributions = np.array(X.mean(axis=0))[0]
-    for topic_idx in range(num_topics):
-        general_usage_vector[topic_idx] = np.sum(
-            topic_word_matrix[topic_idx] * doc_topic_distributions
-        )
-    general_usage_vector = general_usage_vector / np.sum(general_usage_vector)
-
-    # Initialize containers for terms
-    all_terms = {}
-
-    # Get document counts efficiently using sparse matrix
-    print("Calculating document counts...")
-    total_docs = X.shape[0]
-    doc_counts = np.array(X.astype(bool).sum(axis=0))[0]
-
-    # Calculate general language frequencies from NLTK webtext and twitter_samples corpus
-    print("Calculating general language frequencies from NLTK corpora...")
-
-    # Get words from webtext
-    webtext_words = [
-        word.lower() for text in webtext.raw().split() for word in word_tokenize(text)
+def calculate_seed_term_closeness(term_idx, feature_names_dict, X, seed_terms):
+    """Calculate direct closeness to seed terms based on co-occurrence patterns"""
+    seed_indices = [
+        feature_names_dict[seed] for seed in seed_terms if seed in feature_names_dict
     ]
 
-    # Get words from twitter samples (excluding non-English)
-    twitter_words = [
-        word.lower()
-        for text in twitter_samples.strings()
-        for word in word_tokenize(text)
-        if any(c.isalpha() for c in word)  # Filter non-alphabetic tokens
-    ]
+    if not seed_indices:
+        return 0.0
 
-    # Combine both corpora
-    combined_words = webtext_words + twitter_words
+    # Get documents where this term appears (as a set once)
+    term_docs = get_term_docs(term_idx, X)
 
-    # Process combined words
-    processed_words = [
-        word
-        for word in combined_words
-        if len(word) > 1
-        and word not in stopwords.words("english")
-        and word.isalnum()  # Only allow alphanumeric terms
-    ]
+    if not term_docs:
+        return 0.0
 
-    # Calculate frequencies
-    frequency_list = FreqDist(processed_words)
-    general_corpus_frequencies = defaultdict(int)
+    # Pre-compute all seed docs sets at once
+    seed_docs_sets = [set(X[:, seed_idx].nonzero()[0]) for seed_idx in seed_indices]
 
-    # Convert to dictionary and normalize frequencies
-    total_words = sum(frequency_list.values())
-    for term in feature_names_list:
-        general_corpus_frequencies[term] = frequency_list[term] / total_words
+    # Calculate jaccard similarity with each seed term
+    closeness_scores = []
+    for seed_docs in seed_docs_sets:
+        intersection = len(term_docs.intersection(seed_docs))
+        union = len(term_docs.union(seed_docs))
+        closeness_scores.append(intersection / union if union > 0 else 0)
 
-    general_language_scores = general_corpus_frequencies  # Already normalized
+    return sum(closeness_scores) / len(seed_indices)
 
-    # Calculate metrics for each term
-    print("Processing terms...")
-    for term_idx, term in enumerate(feature_names_list):
-        # Skip stopwords and very short terms
-        if term in stopwords.words("english") or len(term) <= 1:
-            continue
 
-        # Calculate term specificity using helper function
-        term_specificity = calculate_term_specificity(
-            term_idx, X, general_language_scores
-        )
+def calculate_term_uniqueness(term_idx, X, lda_doc_topics):
+    """Calculate how uniquely a term belongs to specific topic clusters within a subculture."""
+    # Get documents containing this term
+    term_docs = get_term_docs(term_idx, X)
 
-        # Skip terms with low specificity
-        if term_specificity < 0.1:
-            continue
+    if len(term_docs) <= 1:
+        return 0.0
 
-        # Create a vector for this term in topic space
-        term_vector = np.zeros(num_topics)
-        for topic_idx in range(num_topics):
-            term_vector[topic_idx] = topic_word_matrix[topic_idx][term_idx]
+    # Get topic distribution for these documents
+    term_doc_topics = lda_doc_topics[term_docs]
 
-        def calculate_seed_term_closeness(
-            term_idx, term, feature_names_dict, X, seed_terms
-        ):
-            """Calculate direct closeness to seed terms based on co-occurrence patterns"""
-            seed_indices = [
-                feature_names_dict[seed]
-                for seed in seed_terms
-                if seed in feature_names_dict
-            ]
+    # Find the dominant topic for each document
+    dominant_topics = np.argmax(term_doc_topics, axis=1)
 
-            if not seed_indices:
-                return 0.0
+    # Calculate topic concentration using normalized entropy
+    topic_counts = np.bincount(dominant_topics, minlength=lda_doc_topics.shape[1])
+    topic_probs = topic_counts / np.sum(topic_counts)
+    topic_probs = topic_probs[topic_probs > 0]  # Remove zeros
 
-            # Get documents where this term appears (as a set once)
-            term_docs = set(X[:, term_idx].nonzero()[0])
+    # Calculate entropy (lower entropy = higher concentration = more unique)
+    if len(topic_probs) <= 1:
+        return 1.0  # Maximum uniqueness if term appears in only one topic
 
-            if not term_docs:
-                return 0.0
+    # Calculate normalized entropy (0-1 scale)
+    max_entropy = np.log(len(topic_probs))
+    if max_entropy == 0:
+        return 0.0
 
-            # Pre-compute all seed docs sets at once
-            seed_docs_sets = [
-                set(X[:, seed_idx].nonzero()[0]) for seed_idx in seed_indices
-            ]
+    topic_entropy = entropy(topic_probs)
+    uniqueness = 1 - (topic_entropy / max_entropy)
 
-            # Calculate jaccard similarity with each seed term
-            closeness_scores = []
-            for seed_docs in seed_docs_sets:
-                intersection = len(term_docs.intersection(seed_docs))
-                union = len(term_docs.union(seed_docs))
-                closeness_scores.append(intersection / union if union > 0 else 0)
-
-            return sum(closeness_scores) / len(seed_indices)
-
-        weeb_closeness = calculate_seed_term_closeness(
-            term_idx, term, feature_names_dict, X, weeb_seed_terms
-        )
-        furry_closeness = calculate_seed_term_closeness(
-            term_idx, term, feature_names_dict, X, furry_seed_terms
-        )
-
-        # Reshape term_vector for cosine similarity
-        term_vector = term_vector.reshape(1, -1)
-        weeb_seed_vector = weeb_seed_vector.reshape(1, -1)
-        furry_seed_vector = furry_seed_vector.reshape(1, -1)
-        general_usage_vector = general_usage_vector.reshape(1, -1)
-
-        # Calculate cosine similarity with seed vectors
-        weeb_similarity = cosine_similarity(term_vector, weeb_seed_vector)[0][0]
-        furry_similarity = cosine_similarity(term_vector, furry_seed_vector)[0][0]
-
-        min_similarity_threshold = 0.3
-
-        if (
-            weeb_similarity < min_similarity_threshold
-            and weeb_similarity < min_similarity_threshold
-        ):
-            # Skip terms that have low similarity to both communities
-            continue
-
-        # Apply domain specificity adjustments
-        weeb_similarity = calculate_domain_specificity(
-            term, weeb_similarity, general_language_scores
-        )
-        furry_similarity = calculate_domain_specificity(
-            term, furry_similarity, general_language_scores
-        )
-
-        # Calculate entropy for term distribution
-        term_entropy = calculate_entropy(term_idx, X)
-
-        # Small constant to avoid division by zero
-        epsilon = 1e-10
-
-        # Determine community based on similarity and distinctiveness
-        if (
-            weeb_similarity > furry_similarity
-            and weeb_similarity >= min_similarity_threshold
-        ):
-            community = "weeb"
-            distinctiveness = (weeb_similarity - furry_similarity) / (
-                seed_vector_distance + epsilon
-            )
-            primary_similarity = weeb_similarity
-        elif furry_similarity >= min_similarity_threshold:
-            community = "furry"
-            distinctiveness = (furry_similarity - weeb_similarity) / (
-                seed_vector_distance + epsilon
-            )
-            primary_similarity = furry_similarity
-        else:
-            # Skip terms that don't have sufficient similarity to either community
-            continue
-
-        # Calculate general similarity and uniqueness
-        general_similarity = cosine_similarity(term_vector, general_usage_vector)[0][0]
-        uniqueness = 1.0 - general_similarity
-
-        # Document prevalence (using precomputed doc_counts)
-        doc_count = doc_counts[term_idx]
-        doc_prevalence = float(doc_count) / total_docs
-
-        # Store the calculated metrics
-        term_data = {
-            "term": term,
-            "community": community,
-            "specificity": term_specificity * 1e9,  # Scale up for readability
-            "weeb_similarity": weeb_similarity,
-            "furry_similarity": furry_similarity,
-            "primary_similarity": primary_similarity,
-            "general_similarity": general_similarity,
-            "uniqueness": uniqueness,
-            "distinctiveness": distinctiveness,
-            "contextual_relevance": doc_prevalence,
-            "entropy": term_entropy,
-            "seed_closeness": weeb_closeness
-            if community == "weeb"
-            else furry_closeness,
-        }
-
-        all_terms[term] = term_data
-
-    # Convert to list for DataFrame creation
-    processed_terms = list(all_terms.values())
-
-    # Create dataframes
-    df_terms = pd.DataFrame(processed_terms)
-    if df_terms.empty or len(df_terms) <= 1:
-        return pd.DataFrame(), pd.DataFrame()
-
-    # Set distinctiveness threshold adaptively based on data distribution
-    if len(df_terms) > 10:
-        weeb_terms = df_terms[df_terms["community"] == "weeb"]
-        furry_terms = df_terms[df_terms["community"] == "furry"]
-
-        if not weeb_terms.empty:
-            weeb_distinctiveness_threshold = weeb_terms["distinctiveness"].quantile(0.5)
-        else:
-            weeb_distinctiveness_threshold = 0.05
-
-        if not furry_terms.empty:
-            furry_distinctiveness_threshold = furry_terms["distinctiveness"].quantile(
-                0.5
-            )
-        else:
-            furry_distinctiveness_threshold = 0.05
-    else:
-        weeb_distinctiveness_threshold = 0.05
-        furry_distinctiveness_threshold = 0.05
-
-    print(f"Weeb distinctiveness threshold: {weeb_distinctiveness_threshold:.4f}")
-    print(f"Furry distinctiveness threshold: {furry_distinctiveness_threshold:.4f}")
-
-    # Split into weeb and furry dataframes
-    df_weeb = df_terms[df_terms["community"] == "weeb"].copy()
-    df_furry = df_terms[df_terms["community"] == "furry"].copy()
-
-    # Apply distinctiveness filters
-    df_weeb = df_weeb[df_weeb["distinctiveness"] >= weeb_distinctiveness_threshold]
-    df_furry = df_furry[df_furry["distinctiveness"] >= furry_distinctiveness_threshold]
-
-    # Rename similarity column for consistency with expected output format
-    df_weeb = df_weeb.rename(columns={"primary_similarity": "similarity"})
-    df_furry = df_furry.rename(columns={"primary_similarity": "similarity"})
-
-    # Define weights for scoring
-    weight_specificity = 0.10
-    weight_similarity = 0.25
-    weight_uniqueness = 0.15
-    weight_distinctiveness = 0.15
-    weight_context = 0.05
-    weight_entropy = 0.05
-    weight_seed_closeness = 0.25
-
-    # Define features for normalization and scoring
-    features = [
-        "specificity",
-        "similarity",
-        "uniqueness",
-        "distinctiveness",
-        "contextual_relevance",
-        "entropy",
-        "seed_closeness",
-    ]
-
-    # Update normalization and scoring sections for both dataframes
-    if len(df_weeb) > 1:
-        scaler = MinMaxScaler()
-        normalized_features = scaler.fit_transform(df_weeb[features])
-        df_weeb["normalized_spec"] = normalized_features[:, 0]
-        df_weeb["normalized_sim"] = normalized_features[:, 1]
-        df_weeb["normalized_uniq"] = normalized_features[:, 2]
-        df_weeb["normalized_dist"] = normalized_features[:, 3]
-        df_weeb["normalized_context"] = normalized_features[:, 4]
-        df_weeb["normalized_entropy"] = normalized_features[:, 5]
-        df_weeb["normalized_seed_closeness"] = normalized_features[:, 6]
-
-        # Combined score with weights
-        df_weeb["combined_score"] = (
-            weight_specificity * df_weeb["normalized_spec"]
-            + weight_similarity * df_weeb["normalized_sim"]
-            + weight_uniqueness * df_weeb["normalized_uniq"]
-            + weight_distinctiveness * df_weeb["normalized_dist"]
-            + weight_context * df_weeb["normalized_context"]
-            + weight_entropy * df_weeb["normalized_entropy"]
-            + weight_seed_closeness * df_weeb["normalized_seed_closeness"]
-        )
-
-    if len(df_furry) > 1:
-        scaler = MinMaxScaler()
-        normalized_features = scaler.fit_transform(df_furry[features])
-        df_furry["normalized_spec"] = normalized_features[:, 0]
-        df_furry["normalized_sim"] = normalized_features[:, 1]
-        df_furry["normalized_uniq"] = normalized_features[:, 2]
-        df_furry["normalized_dist"] = normalized_features[:, 3]
-        df_furry["normalized_context"] = normalized_features[:, 4]
-        df_furry["normalized_entropy"] = normalized_features[:, 5]
-        df_furry["normalized_seed_closeness"] = normalized_features[:, 6]
-
-        # Combined score with weights
-        df_furry["combined_score"] = (
-            weight_specificity * df_furry["normalized_spec"]
-            + weight_similarity * df_furry["normalized_sim"]
-            + weight_uniqueness * df_furry["normalized_uniq"]
-            + weight_distinctiveness * df_furry["normalized_dist"]
-            + weight_context * df_furry["normalized_context"]
-            + weight_entropy * df_furry["normalized_entropy"]
-            + weight_seed_closeness * df_furry["normalized_seed_closeness"]
-        )
-
-    # Sort by combined score
-    df_weeb = df_weeb.sort_values("combined_score", ascending=False)
-    df_furry = df_furry.sort_values("combined_score", ascending=False)
-
-    return df_weeb, df_furry
+    return uniqueness
 
 
 # Save results to files
@@ -640,9 +297,13 @@ def save_results(df_weeb, df_furry, output_dir="output"):
         "specificity",
         "similarity",
         "contextual_relevance",
-        "normalized_spec",
-        "normalized_sim",
-        "normalized_context",
+        "seed_closeness",
+        "uniqueness",
+        "normalized_specificity",
+        "normalized_similarity",
+        "normalized_contextual_relevance",
+        "normalized_seed_closeness",
+        "normalized_uniqueness",
         "combined_score",
     ]
 
@@ -692,7 +353,7 @@ def evaluate_model(
     metrics[f"{prefix}topic_diversity"] = calculate_topic_diversity(topic_word_matrix)
 
     # Model-specific metrics with error handling and sample-based approach
-    if hasattr(model, "score") and model_name == "lda":  # Only for LDA
+    if hasattr(model, "score"):  # Only for LDA
         try:
             # Sample data for faster calculation
             sample_size = min(1000, X_test.shape[0])
@@ -763,7 +424,7 @@ def evaluate_model(
             jnp.max(topic_distributions, axis=1)
         )
         metrics[f"{prefix}topic_distribution_entropy"] = -jnp.mean(
-            jnp.sum(topic_distributions * jnp.log(topic_distributions + 1e-12), axis=1)
+            jnp.sum(topic_distributions * jnp.log(topic_distributions + 1e-10), axis=1)
         )
     except Exception as e:
         metrics[f"{prefix}avg_topic_concentration"] = None
@@ -775,6 +436,265 @@ def evaluate_model(
     return metrics
 
 
+def train_independent_models(
+    X, feature_names, seed_terms_dict, n_topics=15, batch_size=2048
+):
+    """Train separate models for each subculture"""
+    models_dict = {}
+    topic_matrices_dict = {}
+    feature_names_list = list(feature_names)
+
+    for subculture, seed_terms in seed_terms_dict.items():
+        print(f"Training model for {subculture} subculture...")
+        # Filter documents that contain at least one seed term
+        seed_indices = [
+            i for i, term in enumerate(feature_names_list) if term in seed_terms
+        ]
+        if not seed_indices:
+            print(f"Warning: No seed terms found for {subculture}")
+            continue
+
+        # Find documents with seed terms
+        seed_docs = set()
+        for term_idx in seed_indices:
+            docs = set(X[:, term_idx].nonzero()[0])
+            seed_docs.update(docs)
+
+        if not seed_docs:
+            print(f"Warning: No documents found containing seed terms for {subculture}")
+            continue
+
+        # Create filtered matrix
+        X_filtered = X[list(seed_docs), :]
+
+        print(f"Training LDA and NMF models for {subculture}...")
+        # Train both LDA and NMF models
+        lda = LatentDirichletAllocation(
+            n_components=n_topics,
+            learning_method="batch",
+            max_iter=20,
+            random_state=42,
+            n_jobs=-1,
+            verbose=1,
+            evaluate_every=2,
+        )
+
+        nmf = MiniBatchNMF(
+            n_components=n_topics,
+            init="nndsvd",
+            batch_size=batch_size,
+            random_state=42,
+            max_iter=200,
+            verbose=0,
+        )
+
+        print(f"Fitting models for {subculture}...")
+        lda.fit(X_filtered)
+        nmf.fit(X_filtered)
+
+        # Store models and their topic matrices
+        models_dict[subculture] = {"lda": lda, "nmf": nmf}
+
+        # Combine topic matrices as before
+        lda_matrix = lda.components_
+        nmf_matrix = nmf.components_
+        nmf_matrix = nmf_matrix / jnp.sum(nmf_matrix, axis=1)[:, jnp.newaxis]
+
+        # Combine matrices with adaptive weighting
+        topic_matrices_dict[subculture] = combine_topic_matrices(lda_matrix, nmf_matrix)
+
+    return models_dict, topic_matrices_dict
+
+
+def set_dynamic_thresholds(df_terms, subculture):
+    """Set subculture-specific thresholds based on distribution"""
+    subculture_terms = df_terms[df_terms["subculture"] == subculture]
+
+    similarity_threshold = float(subculture_terms["similarity"].quantile(0.35))
+    specificity_threshold = float(subculture_terms["specificity"].quantile(0.35))
+
+    print(f"Dynamic thresholds for {subculture}:")
+    print(f"- Similarity: {similarity_threshold:.4f}")
+    print(f"- Specificity: {specificity_threshold:.4f}")
+
+    return similarity_threshold, specificity_threshold
+
+
+def identify_subculture_terms(
+    models,
+    topic_matrix,
+    feature_names,
+    X,
+    seed_terms,
+    subculture_name,
+):
+    """Identify terms for a specific subculture using both LDA and NMF models"""
+    print(f"Identifying terms for {subculture_name} subculture...")
+
+    feature_names_list = list(feature_names)
+    feature_names_dict = {term: idx for idx, term in enumerate(feature_names_list)}
+
+    # Get document-topic distributions from both models - this is expensive, so do it once
+    print(f"Computing document-topic distributions for {subculture_name}...")
+    lda_doc_topics = models["lda"].transform(X)
+    nmf_doc_topics = models["nmf"].transform(X)
+
+    # Combine document-topic distributions with the same weighting as topic matrices
+    lda_confidence = np.mean(np.max(lda_doc_topics, axis=1))
+    nmf_confidence = np.mean(np.max(nmf_doc_topics, axis=1))
+    alpha = lda_confidence / (lda_confidence + nmf_confidence + 1e-10)
+    doc_topics = alpha * lda_doc_topics + (1 - alpha) * nmf_doc_topics
+
+    # Create seed vector in topic space - do this once
+    num_topics = topic_matrix.shape[0]
+    seed_vector = np.zeros(num_topics)
+    seed_count = 0
+    seed_docs = set()
+
+    # Pre-compute seed docs in one pass
+    for seed_term in seed_terms:
+        if seed_term in feature_names_dict:
+            term_idx = feature_names_dict[seed_term]
+
+            for topic_idx in range(num_topics):
+                seed_vector[topic_idx] += topic_matrix[topic_idx][term_idx]
+            seed_count += 1
+
+            docs = set(X[:, term_idx].nonzero()[0])
+            seed_docs.update(docs)
+
+    if seed_count > 0:
+        seed_vector /= seed_count
+
+    # Prepare data structures we'll reuse
+    processed_terms = []
+    total_docs = X.shape[0]
+    doc_counts = np.array(X.astype(bool).sum(axis=0))[0]
+    seed_docs_list = list(seed_docs)
+    
+    # Pre-filter terms with minimum frequency and length
+    viable_term_indices = []
+    for term_idx, term in enumerate(feature_names_list):
+        # Skip very short terms and stopwords early
+        if term in stopwords.words("english") or len(term) <= 1:
+            continue
+            
+        # Skip extremely rare terms
+        if doc_counts[term_idx] < 5:
+            continue
+            
+        viable_term_indices.append(term_idx)
+    
+    print(f"Processing {len(viable_term_indices)} viable terms for {subculture_name}...")
+    
+    # Process terms in batches to avoid memory issues
+    batch_size = 1024
+    for i in range(0, len(viable_term_indices), batch_size):
+        batch_indices = viable_term_indices[i:i+batch_size]
+        
+        for term_idx in batch_indices:
+            term = feature_names_list[term_idx]
+            
+            # Calculate term specificity - skip terms with low specificity early
+            term_specificity = calculate_term_specificity(term_idx, X, seed_docs_list)
+            if term_specificity < 0.1:
+                continue
+
+            # Get documents where this term appears
+            term_docs = get_term_docs(term_idx, X)
+
+            if len(term_docs) > 0:
+                # Calculate term's topic distribution as average of its documents
+                term_topic_dist = np.mean(doc_topics[term_docs], axis=0)
+                term_vector = term_topic_dist.reshape(1, -1)
+            else:
+                continue
+
+            # Calculate similarity with seed terms
+            seed_closeness = calculate_seed_term_closeness(
+                term_idx, feature_names_dict, X, seed_terms
+            )
+
+            # Calculate metrics
+            term_vector = term_vector.reshape(1, -1)
+            seed_vector_reshaped = seed_vector.reshape(1, -1)
+            similarity = cosine_similarity(term_vector, seed_vector_reshaped)[0][0]
+
+            # Skip terms with very low similarity
+            if similarity < 0.3:
+                continue
+
+            # Calculate other metrics more efficiently
+            doc_count = doc_counts[term_idx]
+            doc_prevalence = float(doc_count) / total_docs
+
+            # Add topic distribution similarity
+            topic_sim = similarity  # Already calculated above
+            similarity = (similarity + topic_sim) / 2  # Combine similarity measures
+
+            # Calculate uniqueness within the subculture
+            term_uniqueness = calculate_term_uniqueness(term_idx, X, lda_doc_topics)
+
+            processed_terms.append(
+                {
+                    "term": term,
+                    "subculture": subculture_name,
+                    "specificity": term_specificity * 1e9,
+                    "similarity": similarity,
+                    "contextual_relevance": doc_prevalence,
+                    "seed_closeness": seed_closeness,
+                    "uniqueness": term_uniqueness,
+                }
+            )
+
+        # Progress update
+        print(f"Processed {min(i+batch_size, len(viable_term_indices))} of {len(viable_term_indices)} terms")
+
+    if not processed_terms:
+        return pd.DataFrame()
+
+    df_terms = pd.DataFrame(processed_terms)
+
+    # Apply dynamic thresholds
+    similarity_threshold, specificity_threshold = set_dynamic_thresholds(
+        df_terms, subculture_name
+    )
+    df_terms = df_terms[
+        (df_terms["similarity"] >= similarity_threshold)
+        & (df_terms["specificity"] >= specificity_threshold)
+    ]
+
+    # Apply normalization and scoring
+    if len(df_terms) > 1:
+        features = [
+            "specificity",
+            "similarity",
+            "contextual_relevance",
+            "seed_closeness",
+            "uniqueness",
+        ]
+        scaler = MinMaxScaler()
+        normalized_features = scaler.fit_transform(df_terms[features])
+
+        for i, feature in enumerate(features):
+            df_terms[f"normalized_{feature}"] = normalized_features[:, i]
+
+        # Calculate combined score with existing weights
+        weights = {
+            "specificity": 0.15,
+            "similarity": 0.30,
+            "contextual_relevance": 0.15,
+            "seed_closeness": 0.25,
+            "uniqueness": 0.15,
+        }
+
+        df_terms["combined_score"] = sum(
+            weights[feature] * df_terms[f"normalized_{feature}"] for feature in features
+        )
+
+    return df_terms.sort_values("combined_score", ascending=False)
+
+
 # Main function
 def main(file_path, n_topics=15, max_features=10000, batch_size=2048, seed=42):
     # Set random seed for reproducibility
@@ -784,58 +704,54 @@ def main(file_path, n_topics=15, max_features=10000, batch_size=2048, seed=42):
     df = load_data(file_path)
 
     # Extract features
-    X, vectorizer, feature_names = extract_features(
-        df["text"], max_features=max_features
-    )
+    X, _, feature_names = extract_features(df["text"], max_features=max_features)
 
     # Split data for training and evaluation
     X_train, X_test = train_test_split(X, test_size=0.2, random_state=seed)
 
-    # Train both models with batch processing
-    models, topic_matrices = train_models(
-        X_train, feature_names, n_topics=n_topics, batch_size=batch_size
-    )
-    lda_model, nmf_model = models
-    lda_topic_matrix, nmf_topic_matrix = topic_matrices
+    # Define seed terms dictionary
+    seed_terms_dict = {"weeb": weeb_seed_terms, "furry": furry_seed_terms}
 
-    # Combine topic matrices
-    combined_topic_matrix = combine_topic_matrices(lda_topic_matrix, nmf_topic_matrix)
-
-    # Evaluate both models separately
-    lda_metrics = evaluate_model(
-        lda_model, key, X_train, X_test, feature_names, lda_topic_matrix, "lda"
-    )
-    nmf_metrics = evaluate_model(
-        nmf_model, key, X_train, X_test, feature_names, nmf_topic_matrix, "nmf"
+    # Train independent models
+    models_dict, topic_matrices_dict = train_independent_models(
+        X_train, feature_names, seed_terms_dict, n_topics, batch_size
     )
 
-    # Create a combined evaluation that uses both models appropriately
-    combined_metrics = {
-        "combined_n_topics": n_topics,
-        "combined_topic_diversity": calculate_topic_diversity(combined_topic_matrix),
-    }
+    # Identify terms for each subculture independently
+    df_weeb = identify_subculture_terms(
+        models_dict["weeb"],
+        topic_matrices_dict["weeb"],
+        feature_names,
+        X_train,
+        weeb_seed_terms,
+        "weeb",
+    )
 
-    # Merge all metrics
-    metrics = {**lda_metrics, **nmf_metrics, **combined_metrics}
+    df_furry = identify_subculture_terms(
+        models_dict["furry"],
+        topic_matrices_dict["furry"],
+        feature_names,
+        X_train,
+        furry_seed_terms,
+        "furry",
+    )
 
-    # Print metrics
-    print("\nModel Evaluation Metrics:")
-    for metric, value in metrics.items():
-        print(
-            f"{metric}: {value:.4f}"
-            if isinstance(value, float)
-            else f"{metric}: {value}"
-        )
+    # Evaluate models and combine metrics
+    metrics = {}
+    for subculture, models in models_dict.items():
+        for model_name, model in models.items():
+            subculture_metrics = evaluate_model(
+                model,
+                key,
+                X_train,
+                X_test,
+                feature_names,
+                topic_matrices_dict[subculture],
+                f"{subculture}_{model_name}",
+            )
+            metrics.update(subculture_metrics)
 
-    # Save metrics
     save_metrics(metrics)
-
-    # Use combined topic matrix for term identification
-    df_weeb, df_furry = identify_subculture_terms(
-        combined_topic_matrix, feature_names, X_train
-    )
-
-    # Save results
     save_results(df_weeb, df_furry)
 
     return df_weeb, df_furry, metrics

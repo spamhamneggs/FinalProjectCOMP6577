@@ -20,4 +20,5 @@ members = [ "furry-and-weeb-terms-analyzer/", "subculture-post-classifier/" , "d
 [dependency-groups]
 dev = [
     "ruff>=0.9.9",
+    "vulture>=2.14",
 ]
