@@ -1,25 +1,31 @@
 import json
 import os
 import re
-import warnings
+from collections import defaultdict
+from functools import lru_cache
 
+import jax.numpy as jnp
+import jax.random as random
 import nltk
 import numpy as np
 import pandas as pd
-from nltk.corpus import stopwords
+from nltk import FreqDist
+from nltk.corpus import stopwords, twitter_samples, webtext
 from nltk.tokenize import word_tokenize
+from scipy.stats import entropy
 from sklearn.decomposition import LatentDirichletAllocation, MiniBatchNMF
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
-
-# warnings.filterwarnings("ignore")
 
 # Download necessary NLTK resources
 nltk.download("punkt", quiet=True)
 nltk.download("punkt_tab", quiet=True)
 nltk.download("stopwords", quiet=True)
+nltk.download("webtext", quiet=True)
+nltk.download("twitter_samples", quiet=True)
 
 # Create output directories
 os.makedirs("output", exist_ok=True)
@@ -31,12 +37,14 @@ weeb_seed_terms = [
     "otaku",
     "waifu",
     "kawaii",
-    "chibi",
     "isekai",
     "nani",
     "baka",
     "cosplay",
-    "animeart",
+    "senpai",
+    "moe",
+    "tsundere",
+    "weeb",
 ]
 
 furry_seed_terms = [
@@ -48,6 +56,11 @@ furry_seed_terms = [
     "paws",
     "uwu",
     "owo",
+    "furcon",
+    "furries",
+    "fursuits",
+    "pawsome",
+    "tailwag",
 ]
 
 
@@ -62,6 +75,7 @@ def load_data(file_path):
 
 
 # Text preprocessing
+@lru_cache(maxsize=10000)
 def preprocess_text(text):
     if not isinstance(text, str):
         return ""
@@ -69,17 +83,14 @@ def preprocess_text(text):
     # Convert to lowercase
     text = text.lower()
 
-    # Replace URLs with a placeholder
-    text = re.sub(r"http\S+", "URL", text)
+    # Remove URLs
+    text = re.sub(r"http\S+", "", text)
 
-    # Keep emoticons (not removing punctuation)
-    # Keep hashtags
-    text = re.sub(r"#(\w+)", r"\1", text)
+    # Remove all punctuation
+    text = re.sub(r"[^\w\s]", "", text)
 
-    # Remove special characters except those used in emoticons
-    emoticon_chars = r"()[]\{\}:;,.!?/\\|~-_<>^*+#@$%&="
-    emoticon_pattern = f"[^a-zA-Z0-9\\s{re.escape(emoticon_chars)}]"
-    text = re.sub(emoticon_pattern, "", text)
+    # Remove all independent numbers
+    text = re.sub(r"\b\d+\b", "", text)
 
     return text
 
@@ -96,7 +107,7 @@ def tokenize_text(text):
 
 
 # Feature extraction
-def extract_features(texts, max_features=5000, min_df=3, max_df=0.95):
+def extract_features(texts, max_features=5000, min_df=20, max_df=0.90):
     print("Extracting features...")
     # Use TF-IDF instead of raw counts for better NMF performance
     vectorizer = TfidfVectorizer(
@@ -105,24 +116,39 @@ def extract_features(texts, max_features=5000, min_df=3, max_df=0.95):
         max_df=max_df,
         tokenizer=tokenize_text,
         preprocessor=preprocess_text,
+        lowercase=False,
+        stop_words="english",
+        ngram_range=(1, 2),
+        sublinear_tf=True,  # Apply sublinear scaling to term frequencies
+        norm="l2",  # Use L2 normalization
+        use_idf=True,
+        smooth_idf=True,
+        strip_accents="unicode",
     )
+
+    print(f"Using max_df={max_df}, min_df={min_df}")
     X = vectorizer.fit_transform(texts)
     feature_names = vectorizer.get_feature_names_out()
+
+    # Print statistics about feature extraction
+    n_samples, n_features = X.shape
+    print(f"Extracted {n_features} features from {n_samples} documents")
+
     return X, vectorizer, feature_names
 
 
-def train_models(X, feature_names, n_topics=10, batch_size=2048):
+def train_models(X, feature_names, n_topics=20, batch_size=2048):
     print("Training LDA and NMF models...")
 
     # Train LDA model
     lda = LatentDirichletAllocation(
         n_components=n_topics,
         learning_method="batch",
-        learning_decay=0.7,
         max_iter=20,
         random_state=42,
         n_jobs=-1,
         verbose=1,
+        evaluate_every=2,
     )
 
     # Train MiniBatch NMF model
@@ -132,7 +158,7 @@ def train_models(X, feature_names, n_topics=10, batch_size=2048):
         batch_size=batch_size,
         random_state=42,
         max_iter=200,
-        verbose=1,
+        verbose=0,
     )
 
     print("Fitting LDA...")
@@ -145,284 +171,460 @@ def train_models(X, feature_names, n_topics=10, batch_size=2048):
     nmf_topic_word = nmf.components_
 
     # Normalize NMF components for comparison with LDA
-    nmf_topic_word = nmf_topic_word / nmf_topic_word.sum(axis=1)[:, np.newaxis]
+    nmf_topic_word = nmf_topic_word / jnp.sum(nmf_topic_word, axis=1)[:, jnp.newaxis]
 
     return (lda, nmf), (lda_topic_word, nmf_topic_word)
 
 
 def combine_topic_matrices(lda_matrix, nmf_matrix, alpha=0.5):
-    """Combine LDA and NMF topic-word matrices with a weighted average"""
+    """Combine LDA and NMF topic-word matrices with adaptive weighting"""
+    # Add confidence scoring
+    lda_confidence = np.mean(np.max(lda_matrix, axis=1))
+    nmf_confidence = np.mean(np.max(nmf_matrix, axis=1))
+
+    # Adjust alpha based on confidence scores
+    alpha = lda_confidence / (lda_confidence + nmf_confidence)
+
     return alpha * lda_matrix + (1 - alpha) * nmf_matrix
-
-
-# Calculate topic coherence
-def calculate_coherence(model, X, feature_names, method="c_v"):
-    print("Calculating topic coherence...")
-    coherence_scores = []
-    topic_word_dists = model.components_
-    
-    # Get dimensions of sparse matrix without converting to dense
-    n_docs, n_terms = X.shape
-    
-    for topic_idx, topic_dist in enumerate(topic_word_dists):
-        top_word_indices = topic_dist.argsort()[:-11:-1]
-        top_words = [feature_names[i] for i in top_word_indices]
-        
-        # Calculate NPMI-based coherence
-        word_cooccurrence = np.zeros((len(top_words), len(top_words)))
-        
-        # Process columns (words) of sparse matrix one at a time
-        word_docs = {}
-        for i, word_idx in enumerate(top_word_indices):
-            # Extract column as sparse array and convert to binary occurrence
-            col = X.getcol(word_idx)
-            word_docs[i] = set(col.nonzero()[0])
-        
-        # Calculate co-occurrence without materializing the full matrix
-        for i in range(len(top_word_indices)):
-            for j in range(i+1, len(top_word_indices)):
-                if i < j:
-                    docs_i = word_docs[i]
-                    docs_j = word_docs[j]
-                    
-                    co_docs = len(docs_i.intersection(docs_j))
-                    word1_docs = len(docs_i)
-                    word2_docs = len(docs_j)
-                    total_docs = n_docs
-                    
-                    # Calculate NPMI (Normalized Pointwise Mutual Information)
-                    if co_docs > 0:
-                        pmi = np.log((co_docs * total_docs) / (word1_docs * word2_docs))
-                        npmi = pmi / -np.log(co_docs / total_docs)
-                        word_cooccurrence[i, j] = npmi
-                        word_cooccurrence[j, i] = npmi
-        
-        # Average coherence for this topic
-        coherence_scores.append(np.mean(word_cooccurrence))
-    
-    return np.mean(coherence_scores)
-
-
-# Calculate perplexity
-def calculate_perplexity(model, X_test):
-    print("Calculating perplexity...")
-    return model.perplexity(X_test)
 
 
 # Calculate topic diversity
 def calculate_topic_diversity(topic_word_matrix, top_n=10):
+    """Calculate topic diversity"""
     print("Calculating topic diversity...")
 
     num_topics = topic_word_matrix.shape[0]
     top_words_indices = []
 
     for topic_idx in range(num_topics):
-        top_indices = topic_word_matrix[topic_idx].argsort()[: -top_n - 1 : -1]
-        top_words_indices.append(set(top_indices))
+        # Get word probabilities for this topic
+        word_probs = topic_word_matrix[topic_idx]
+
+        # Get top N indices
+        top_indices = jnp.argsort(word_probs)[-top_n:]
+
+        # Convert JAX array to NumPy array for hashable type
+        top_indices_np = np.asarray(top_indices)
+
+        # Add to list of sets
+        top_words_indices.append(set(top_indices_np))
 
     # Calculate Jaccard similarity between topics
-    similarity_matrix = np.zeros((num_topics, num_topics))
+    similarity_matrix = jnp.zeros((num_topics, num_topics))
 
     for i in range(num_topics):
         for j in range(i + 1, num_topics):
             intersection = len(top_words_indices[i].intersection(top_words_indices[j]))
             union = len(top_words_indices[i].union(top_words_indices[j]))
             similarity = intersection / union if union > 0 else 0
-            similarity_matrix[i, j] = similarity
-            similarity_matrix[j, i] = similarity
+            similarity_matrix = similarity_matrix.at[i, j].set(similarity)
+            similarity_matrix = similarity_matrix.at[j, i].set(similarity)
 
     # Topic diversity is the average pairwise distance
-    diversity = 1 - np.mean(similarity_matrix)
+    diversity = 1 - jnp.mean(similarity_matrix)
 
     return diversity
 
 
+# Helper functions for term identification
+def calculate_term_specificity(term_idx, X, general_corpus=None):
+    """Compare term frequency in dataset vs general language corpus"""
+    # Higher scores mean more specific to the dataset
+    if general_corpus is not None:
+        dataset_freq = X[:, term_idx].sum() / X.sum()
+        return dataset_freq / (general_corpus[term_idx] + 1e-10)
+    else:
+        # Fallback to document frequency as a proxy for specificity
+        return np.log(X.shape[0] / (X[:, term_idx].getnnz() + 1))
+
+
+def calculate_domain_specificity(term, similarity_score, general_corpus):
+    """Calculate domain-specific similarity with penalties for common terms"""
+    # Get the term's frequency in general corpus (defaults to 0 if not present)
+    general_freq = general_corpus.get(term, 0)
+
+    # Apply graduated penalty based on frequency in general corpus
+    # For very common terms (high frequency), penalty is stronger
+    # For rare terms (low frequency), penalty is minimal
+    penalty_factor = max(0.3, 1.0 - (general_freq * 200))
+
+    return similarity_score * penalty_factor
+
+
+def calculate_entropy(term_idx, X):
+    """Calculate entropy of term distribution across documents using sparse operations"""
+    # Get term frequency across documents (keeping sparse)
+    term_docs = X[:, term_idx].nonzero()[0]
+
+    # If no occurrences, return 0
+    if len(term_docs) == 0:
+        return 0
+
+    # Count occurrences in each document (still sparse)
+    term_freqs = X[term_docs, term_idx].toarray().flatten()
+
+    # Normalize and calculate entropy
+    term_freqs = term_freqs / term_freqs.sum()
+    return entropy(term_freqs)
+
+
 # Identify furry and weeb terms from topics
-def identify_subculture_terms(lda_model, feature_names, X):
+def identify_subculture_terms(topic_word_matrix, feature_names, X):
     print("Identifying subculture terms...")
-    topic_word_matrix = lda_model.components_
     num_topics = topic_word_matrix.shape[0]
+
+    # Convert feature_names to list for efficient lookups
+    feature_names_list = list(feature_names)
+    feature_names_dict = {term: idx for idx, term in enumerate(feature_names_list)}
+
+    # Create vectors for seed terms in topic space
+    weeb_seed_vector = np.zeros(num_topics)
+    furry_seed_vector = np.zeros(num_topics)
+
+    # Calculate average topic distribution for seed terms
+    weeb_seed_count = 0
+    furry_seed_count = 0
+
+    for seed_term in weeb_seed_terms:
+        if seed_term in feature_names_dict:
+            term_idx = feature_names_dict[seed_term]
+            # Find which topics this seed term appears in significantly
+            for topic_idx in range(num_topics):
+                weeb_seed_vector[topic_idx] += topic_word_matrix[topic_idx][term_idx]
+            weeb_seed_count += 1
+
+    for seed_term in furry_seed_terms:
+        if seed_term in feature_names_dict:
+            term_idx = feature_names_dict[seed_term]
+            # Find which topics this seed term appears in significantly
+            for topic_idx in range(num_topics):
+                furry_seed_vector[topic_idx] += topic_word_matrix[topic_idx][term_idx]
+            furry_seed_count += 1
+
+    # Normalize seed vectors
+    if weeb_seed_count > 0:
+        weeb_seed_vector /= weeb_seed_count
+    if furry_seed_count > 0:
+        furry_seed_vector /= furry_seed_count
+
+    # Calculate seed vector distance for measuring distinctness
+    seed_vector_distance = cosine_similarity([weeb_seed_vector], [furry_seed_vector])[
+        0
+    ][0]
+    print(f"Seed vector similarity: {seed_vector_distance:.4f}")
+
+    # Create a general usage vector in topic space instead of term space
+    print("Calculating general usage vector...")
+    general_usage_vector = np.zeros(num_topics)
+    doc_topic_distributions = np.array(X.mean(axis=0))[0]
+    for topic_idx in range(num_topics):
+        general_usage_vector[topic_idx] = np.sum(
+            topic_word_matrix[topic_idx] * doc_topic_distributions
+        )
+    general_usage_vector = general_usage_vector / np.sum(general_usage_vector)
 
     # Initialize containers for terms
     all_terms = {}
 
-    # Calculate various metrics for each term
-    for topic_idx in range(num_topics):
-        # Get word probabilities for this topic
-        word_probs = topic_word_matrix[topic_idx]
+    # Get document counts efficiently using sparse matrix
+    print("Calculating document counts...")
+    total_docs = X.shape[0]
+    doc_counts = np.array(X.astype(bool).sum(axis=0))[0]
 
-        # Get all words with their probabilities (not just top N)
-        for term_idx, term in enumerate(feature_names):
-            prob = word_probs[term_idx]
+    # Calculate general language frequencies from NLTK webtext and twitter_samples corpus
+    print("Calculating general language frequencies from NLTK corpora...")
 
-            if prob > 0.0001:  # Filter very low probability terms
-                # Initialize term data if not already present
-                if term not in all_terms:
-                    all_terms[term] = {
-                        "specificity": [],
-                        "topic_assignments": [],
-                        "doc_prevalence": 0,
-                    }
+    # Get words from webtext
+    webtext_words = [
+        word.lower() for text in webtext.raw().split() for word in word_tokenize(text)
+    ]
 
-                # Add specificity (how strongly this term is associated with this topic)
-                all_terms[term]["specificity"].append(prob)
-                all_terms[term]["topic_assignments"].append(topic_idx)
+    # Get words from twitter samples (excluding non-English)
+    twitter_words = [
+        word.lower()
+        for text in twitter_samples.strings()
+        for word in word_tokenize(text)
+        if any(c.isalpha() for c in word)  # Filter non-alphabetic tokens
+    ]
 
-    # Calculate document prevalence for each term efficiently
-    # Process one term at a time to avoid memory issues
-    n_docs = X.shape[0]
-    for term_idx, term in enumerate(feature_names):
-        if term in all_terms:
-            # Get the column for this term (sparse vector)
-            col = X.getcol(term_idx)
-            # Count documents where term appears (nonzero entries)
-            doc_count = col.nnz
-            # Calculate prevalence
-            all_terms[term]["doc_prevalence"] = doc_count / n_docs
+    # Combine both corpora
+    combined_words = webtext_words + twitter_words
 
-    # Process and categorize terms
-    processed_terms = []
+    # Process combined words
+    processed_words = [
+        word
+        for word in combined_words
+        if len(word) > 1
+        and word not in stopwords.words("english")
+        and word.isalnum()  # Only allow alphanumeric terms
+    ]
 
-    for term, data in all_terms.items():
-        # Skip if no specificity data
-        if not data["specificity"]:
+    # Calculate frequencies
+    frequency_list = FreqDist(processed_words)
+    general_corpus_frequencies = defaultdict(int)
+
+    # Convert to dictionary and normalize frequencies
+    total_words = sum(frequency_list.values())
+    for term in feature_names_list:
+        general_corpus_frequencies[term] = frequency_list[term] / total_words
+
+    general_language_scores = general_corpus_frequencies  # Already normalized
+
+    # Calculate metrics for each term
+    print("Processing terms...")
+    for term_idx, term in enumerate(feature_names_list):
+        # Skip stopwords and very short terms
+        if term in stopwords.words("english") or len(term) <= 1:
             continue
 
-        # Calculate metrics
-        specificity = np.sum(data["specificity"]) * 1e9  # Scale up for readability
-        specificity_std = np.std(data["specificity"]) * 1e9
-        specificity_ci = 1.96 * specificity_std / np.sqrt(len(data["specificity"]))
+        # Calculate term specificity using helper function
+        term_specificity = calculate_term_specificity(
+            term_idx, X, general_language_scores
+        )
 
-        # Calculate similarity scores with seed terms
-        weeb_similarity = 0
-        furry_similarity = 0
+        # Skip terms with low specificity
+        if term_specificity < 0.1:
+            continue
 
-        # Simple similarity based on co-occurrence in topics
-        for topic_idx in data["topic_assignments"]:
-            # Check if weeb or furry seed terms are prominent in this topic
-            topic_probs = topic_word_matrix[topic_idx]
-            weeb_count = 0
-            furry_count = 0
+        # Create a vector for this term in topic space
+        term_vector = np.zeros(num_topics)
+        for topic_idx in range(num_topics):
+            term_vector[topic_idx] = topic_word_matrix[topic_idx][term_idx]
 
-            for seed_term in weeb_seed_terms:
-                if seed_term in feature_names:
-                    seed_idx = np.where(feature_names == seed_term)[0]
-                    if len(seed_idx) > 0 and topic_probs[seed_idx[0]] > 0.001:
-                        weeb_count += 1
+        def calculate_seed_term_closeness(
+            term_idx, term, feature_names_dict, X, seed_terms
+        ):
+            """Calculate direct closeness to seed terms based on co-occurrence patterns"""
+            seed_indices = [
+                feature_names_dict[seed]
+                for seed in seed_terms
+                if seed in feature_names_dict
+            ]
 
-            for seed_term in furry_seed_terms:
-                if seed_term in feature_names:
-                    seed_idx = np.where(feature_names == seed_term)[0]
-                    if len(seed_idx) > 0 and topic_probs[seed_idx[0]] > 0.001:
-                        furry_count += 1
+            if not seed_indices:
+                return 0.0
 
-            # Assign similarity based on which seed terms are more prevalent
-            if weeb_count > furry_count:
-                weeb_similarity += 1
-            elif furry_count > weeb_count:
-                furry_similarity += 1
-            else:
-                # Equal counts, split the similarity
-                weeb_similarity += 0.5
-                furry_similarity += 0.5
+            # Get documents where this term appears (as a set once)
+            term_docs = set(X[:, term_idx].nonzero()[0])
 
-        # Normalize similarities
-        total_assignments = len(data["topic_assignments"])
-        if total_assignments > 0:
-            weeb_similarity /= total_assignments
-            furry_similarity /= total_assignments
+            if not term_docs:
+                return 0.0
 
-        # Calculate contextual relevance - how specific the term is to certain contexts
-        contextual_relevance = data["doc_prevalence"]
+            # Pre-compute all seed docs sets at once
+            seed_docs_sets = [
+                set(X[:, seed_idx].nonzero()[0]) for seed_idx in seed_indices
+            ]
+
+            # Calculate jaccard similarity with each seed term
+            closeness_scores = []
+            for seed_docs in seed_docs_sets:
+                intersection = len(term_docs.intersection(seed_docs))
+                union = len(term_docs.union(seed_docs))
+                closeness_scores.append(intersection / union if union > 0 else 0)
+
+            return sum(closeness_scores) / len(seed_indices)
+
+        weeb_closeness = calculate_seed_term_closeness(
+            term_idx, term, feature_names_dict, X, weeb_seed_terms
+        )
+        furry_closeness = calculate_seed_term_closeness(
+            term_idx, term, feature_names_dict, X, furry_seed_terms
+        )
+
+        # Reshape term_vector for cosine similarity
+        term_vector = term_vector.reshape(1, -1)
+        weeb_seed_vector = weeb_seed_vector.reshape(1, -1)
+        furry_seed_vector = furry_seed_vector.reshape(1, -1)
+        general_usage_vector = general_usage_vector.reshape(1, -1)
+
+        # Calculate cosine similarity with seed vectors
+        weeb_similarity = cosine_similarity(term_vector, weeb_seed_vector)[0][0]
+        furry_similarity = cosine_similarity(term_vector, furry_seed_vector)[0][0]
+
+        min_similarity_threshold = 0.3
+
+        if (
+            weeb_similarity < min_similarity_threshold
+            and weeb_similarity < min_similarity_threshold
+        ):
+            # Skip terms that have low similarity to both communities
+            continue
+
+        # Apply domain specificity adjustments
+        weeb_similarity = calculate_domain_specificity(
+            term, weeb_similarity, general_language_scores
+        )
+        furry_similarity = calculate_domain_specificity(
+            term, furry_similarity, general_language_scores
+        )
+
+        # Calculate entropy for term distribution
+        term_entropy = calculate_entropy(term_idx, X)
+
+        # Small constant to avoid division by zero
+        epsilon = 1e-10
+
+        # Determine community based on similarity and distinctiveness
+        if (
+            weeb_similarity > furry_similarity
+            and weeb_similarity >= min_similarity_threshold
+        ):
+            community = "weeb"
+            distinctiveness = (weeb_similarity - furry_similarity) / (
+                seed_vector_distance + epsilon
+            )
+            primary_similarity = weeb_similarity
+        elif furry_similarity >= min_similarity_threshold:
+            community = "furry"
+            distinctiveness = (furry_similarity - weeb_similarity) / (
+                seed_vector_distance + epsilon
+            )
+            primary_similarity = furry_similarity
+        else:
+            # Skip terms that don't have sufficient similarity to either community
+            continue
+
+        # Calculate general similarity and uniqueness
+        general_similarity = cosine_similarity(term_vector, general_usage_vector)[0][0]
+        uniqueness = 1.0 - general_similarity
+
+        # Document prevalence (using precomputed doc_counts)
+        doc_count = doc_counts[term_idx]
+        doc_prevalence = float(doc_count) / total_docs
 
         # Store the calculated metrics
         term_data = {
             "term": term,
-            "specificity": specificity,
-            "specificity_std": specificity_std,
-            "specificity_ci": specificity_ci,
+            "community": community,
+            "specificity": term_specificity * 1e9,  # Scale up for readability
             "weeb_similarity": weeb_similarity,
             "furry_similarity": furry_similarity,
-            "contextual_relevance": contextual_relevance,
+            "primary_similarity": primary_similarity,
+            "general_similarity": general_similarity,
+            "uniqueness": uniqueness,
+            "distinctiveness": distinctiveness,
+            "contextual_relevance": doc_prevalence,
+            "entropy": term_entropy,
+            "seed_closeness": weeb_closeness
+            if community == "weeb"
+            else furry_closeness,
         }
 
-        processed_terms.append(term_data)
+        all_terms[term] = term_data
 
-    # Create dataframes for weeb and furry terms
+    # Convert to list for DataFrame creation
+    processed_terms = list(all_terms.values())
+
+    # Create dataframes
     df_terms = pd.DataFrame(processed_terms)
+    if df_terms.empty or len(df_terms) <= 1:
+        return pd.DataFrame(), pd.DataFrame()
 
-    # Calculate ensemble scores
-    if not df_terms.empty:
-        # Normalize values across all terms
+    # Set distinctiveness threshold adaptively based on data distribution
+    if len(df_terms) > 10:
+        weeb_terms = df_terms[df_terms["community"] == "weeb"]
+        furry_terms = df_terms[df_terms["community"] == "furry"]
+
+        if not weeb_terms.empty:
+            weeb_distinctiveness_threshold = weeb_terms["distinctiveness"].quantile(0.5)
+        else:
+            weeb_distinctiveness_threshold = 0.05
+
+        if not furry_terms.empty:
+            furry_distinctiveness_threshold = furry_terms["distinctiveness"].quantile(
+                0.5
+            )
+        else:
+            furry_distinctiveness_threshold = 0.05
+    else:
+        weeb_distinctiveness_threshold = 0.05
+        furry_distinctiveness_threshold = 0.05
+
+    print(f"Weeb distinctiveness threshold: {weeb_distinctiveness_threshold:.4f}")
+    print(f"Furry distinctiveness threshold: {furry_distinctiveness_threshold:.4f}")
+
+    # Split into weeb and furry dataframes
+    df_weeb = df_terms[df_terms["community"] == "weeb"].copy()
+    df_furry = df_terms[df_terms["community"] == "furry"].copy()
+
+    # Apply distinctiveness filters
+    df_weeb = df_weeb[df_weeb["distinctiveness"] >= weeb_distinctiveness_threshold]
+    df_furry = df_furry[df_furry["distinctiveness"] >= furry_distinctiveness_threshold]
+
+    # Rename similarity column for consistency with expected output format
+    df_weeb = df_weeb.rename(columns={"primary_similarity": "similarity"})
+    df_furry = df_furry.rename(columns={"primary_similarity": "similarity"})
+
+    # Define weights for scoring
+    weight_specificity = 0.10
+    weight_similarity = 0.25
+    weight_uniqueness = 0.15
+    weight_distinctiveness = 0.15
+    weight_context = 0.05
+    weight_entropy = 0.05
+    weight_seed_closeness = 0.25
+
+    # Define features for normalization and scoring
+    features = [
+        "specificity",
+        "similarity",
+        "uniqueness",
+        "distinctiveness",
+        "contextual_relevance",
+        "entropy",
+        "seed_closeness",
+    ]
+
+    # Update normalization and scoring sections for both dataframes
+    if len(df_weeb) > 1:
         scaler = MinMaxScaler()
+        normalized_features = scaler.fit_transform(df_weeb[features])
+        df_weeb["normalized_spec"] = normalized_features[:, 0]
+        df_weeb["normalized_sim"] = normalized_features[:, 1]
+        df_weeb["normalized_uniq"] = normalized_features[:, 2]
+        df_weeb["normalized_dist"] = normalized_features[:, 3]
+        df_weeb["normalized_context"] = normalized_features[:, 4]
+        df_weeb["normalized_entropy"] = normalized_features[:, 5]
+        df_weeb["normalized_seed_closeness"] = normalized_features[:, 6]
 
-        # Make sure we have enough data to scale
-        if len(df_terms) > 1:
-            df_terms["normalized_spec"] = scaler.fit_transform(
-                df_terms[["specificity"]]
-            )
+        # Combined score with weights
+        df_weeb["combined_score"] = (
+            weight_specificity * df_weeb["normalized_spec"]
+            + weight_similarity * df_weeb["normalized_sim"]
+            + weight_uniqueness * df_weeb["normalized_uniq"]
+            + weight_distinctiveness * df_weeb["normalized_dist"]
+            + weight_context * df_weeb["normalized_context"]
+            + weight_entropy * df_weeb["normalized_entropy"]
+            + weight_seed_closeness * df_weeb["normalized_seed_closeness"]
+        )
 
-            # Calculate ensemble scores - weighted combination of metrics
-            df_terms["ensemble_score"] = 1 - 1 / (1 + df_terms["specificity"])
-            df_terms["normalized_ensemble"] = scaler.fit_transform(
-                df_terms[["ensemble_score"]]
-            )
+    if len(df_furry) > 1:
+        scaler = MinMaxScaler()
+        normalized_features = scaler.fit_transform(df_furry[features])
+        df_furry["normalized_spec"] = normalized_features[:, 0]
+        df_furry["normalized_sim"] = normalized_features[:, 1]
+        df_furry["normalized_uniq"] = normalized_features[:, 2]
+        df_furry["normalized_dist"] = normalized_features[:, 3]
+        df_furry["normalized_context"] = normalized_features[:, 4]
+        df_furry["normalized_entropy"] = normalized_features[:, 5]
+        df_furry["normalized_seed_closeness"] = normalized_features[:, 6]
 
-            # Initialize the result dataframes
-            df_weeb = df_terms.copy()
-            df_furry = df_terms.copy()
+        # Combined score with weights
+        df_furry["combined_score"] = (
+            weight_specificity * df_furry["normalized_spec"]
+            + weight_similarity * df_furry["normalized_sim"]
+            + weight_uniqueness * df_furry["normalized_uniq"]
+            + weight_distinctiveness * df_furry["normalized_dist"]
+            + weight_context * df_furry["normalized_context"]
+            + weight_entropy * df_furry["normalized_entropy"]
+            + weight_seed_closeness * df_furry["normalized_seed_closeness"]
+        )
 
-            # Rename the columns to match output format
-            df_weeb = df_weeb.rename(columns={"weeb_similarity": "similarity"})
-            df_furry = df_furry.rename(columns={"furry_similarity": "similarity"})
+    # Sort by combined score
+    df_weeb = df_weeb.sort_values("combined_score", ascending=False)
+    df_furry = df_furry.sort_values("combined_score", ascending=False)
 
-            # Normalize similarity columns
-            if len(df_weeb) > 1:
-                df_weeb["normalized_sim"] = scaler.fit_transform(
-                    df_weeb[["similarity"]]
-                )
-                df_weeb["normalized_context"] = scaler.fit_transform(
-                    df_weeb[["contextual_relevance"]]
-                )
-
-                # Combined score for weeb terms
-                df_weeb["combined_score"] = (
-                    0.4 * df_weeb["normalized_spec"]
-                    + 0.4 * df_weeb["normalized_sim"]
-                    + 0.2 * df_weeb["normalized_context"]
-                )
-            else:
-                df_weeb["normalized_sim"] = df_weeb["similarity"]
-                df_weeb["normalized_context"] = df_weeb["contextual_relevance"]
-                df_weeb["combined_score"] = df_weeb["normalized_spec"]
-
-            if len(df_furry) > 1:
-                df_furry["normalized_sim"] = scaler.fit_transform(
-                    df_furry[["similarity"]]
-                )
-                df_furry["normalized_context"] = scaler.fit_transform(
-                    df_furry[["contextual_relevance"]]
-                )
-
-                # Combined score for furry terms
-                df_furry["combined_score"] = (
-                    0.4 * df_furry["normalized_spec"]
-                    + 0.4 * df_furry["normalized_sim"]
-                    + 0.2 * df_furry["normalized_context"]
-                )
-            else:
-                df_furry["normalized_sim"] = df_furry["similarity"]
-                df_furry["normalized_context"] = df_furry["contextual_relevance"]
-                df_furry["combined_score"] = df_furry["normalized_spec"]
-
-            # Sort by combined score
-            df_weeb = df_weeb.sort_values("combined_score", ascending=False)
-            df_furry = df_furry.sort_values("combined_score", ascending=False)
-
-            return df_weeb, df_furry
-
-    # Return empty dataframes if processing failed
-    return pd.DataFrame(), pd.DataFrame()
+    return df_weeb, df_furry
 
 
 # Save results to files
@@ -436,15 +638,11 @@ def save_results(df_weeb, df_furry, output_dir="output"):
     columns = [
         "term",
         "specificity",
-        "specificity_std",
-        "specificity_ci",
         "similarity",
         "contextual_relevance",
         "normalized_spec",
         "normalized_sim",
         "normalized_context",
-        "ensemble_score",
-        "normalized_ensemble",
         "combined_score",
     ]
 
@@ -466,9 +664,11 @@ def save_metrics(metrics, output_dir="output"):
     print("Saving metrics to file...")
     metrics_file = os.path.join(output_dir, "model_metrics.json")
 
-    # Format floating point numbers
+    # Format floating point numbers and convert JAX arrays to NumPy arrays
     formatted_metrics = {}
     for key, value in metrics.items():
+        # Convert JAX array to NumPy array and then to a float
+        value = np.asarray(value).item()
         if isinstance(value, float):
             formatted_metrics[key] = round(value, 4)
         else:
@@ -481,7 +681,7 @@ def save_metrics(metrics, output_dir="output"):
 
 
 def evaluate_model(
-    model, X_train, X_test, feature_names, topic_word_matrix, model_name=""
+    model, key, X_train, X_test, feature_names, topic_word_matrix, model_name=""
 ):
     """Comprehensive model evaluation."""
     metrics = {}
@@ -491,40 +691,94 @@ def evaluate_model(
     metrics[f"{prefix}n_topics"] = model.n_components
     metrics[f"{prefix}topic_diversity"] = calculate_topic_diversity(topic_word_matrix)
 
-    # Model-specific metrics
-    if hasattr(model, "perplexity"):  # Only LDA has perplexity
-        metrics[f"{prefix}perplexity"] = calculate_perplexity(model, X_test)
+    # Model-specific metrics with error handling and sample-based approach
+    if hasattr(model, "score") and model_name == "lda":  # Only for LDA
+        try:
+            # Sample data for faster calculation
+            sample_size = min(1000, X_test.shape[0])
+            indices = random.choice(
+                key, jnp.arange(X_test.shape[0]), shape=(sample_size,), replace=False
+            )
+            X_sample = X_test[indices]
 
-    metrics[f"{prefix}coherence"] = calculate_coherence(model, X_test, feature_names)
+            # Use score instead of score for efficiency
+            metrics[f"{prefix}score"] = model.score(X_sample)
+            print(f"Calculated {model_name} score: {metrics[f'{prefix}score']:.4f}")
+        except Exception as e:
+            metrics[f"{prefix}score"] = None
+            print(f"Warning: Could not calculate score for {model_name} - {e}")
+    else:
+        # Skip score for non-LDA models
+        metrics[f"{prefix}score"] = None
+        if model_name != "lda":
+            print(f"Skipping score calculation for {model_name} (not supported)")
 
     # Topic-document distribution
     doc_topic_dist = model.transform(X_train)
 
     # Calculate silhouette score using topic distributions
     try:
+        # Sample data for faster calculation if needed
+        if doc_topic_dist.shape[0] > 5000:
+            sample_size = 5000
+            indices = random.choice(
+                key,
+                jnp.arange(doc_topic_dist.shape[0]),
+                shape=(sample_size,),
+                replace=False,
+            )
+            sample_dist = doc_topic_dist[indices]
+            sample_labels = jnp.argmax(sample_dist, axis=1)
+        else:
+            sample_dist = doc_topic_dist
+            sample_labels = jnp.argmax(sample_dist, axis=1)
+
+        # Convert JAX arrays to NumPy arrays
+        sample_dist_np = np.asarray(sample_dist)
+        sample_labels_np = np.asarray(sample_labels)
+
+        # Calculate silhouette score
         metrics[f"{prefix}silhouette_score"] = silhouette_score(
-            doc_topic_dist, np.argmax(doc_topic_dist, axis=1)
+            sample_dist_np, sample_labels_np
         )
-    except ValueError as e:
+    except Exception as e:
         metrics[f"{prefix}silhouette_score"] = None
         print(f"Warning: Could not calculate silhouette score for {model_name} - {e}")
 
     # Calculate topic distribution statistics
-    topic_distributions = model.transform(X_test)
-    metrics[f"{prefix}avg_topic_concentration"] = np.mean(
-        np.max(topic_distributions, axis=1)
-    )
-    metrics[f"{prefix}topic_distribution_entropy"] = -np.mean(
-        np.sum(topic_distributions * np.log(topic_distributions + 1e-12), axis=1)
-    )
+    try:
+        # Sample data for faster calculation if needed
+        if X_test.shape[0] > 1000:
+            sample_size = 1000
+            indices = random.choice(
+                key, jnp.arange(X_test.shape[0]), shape=(sample_size,), replace=False
+            )
+            X_sample = X_test[indices]
+            topic_distributions = model.transform(X_sample)
+        else:
+            topic_distributions = model.transform(X_test)
+
+        # Avoid log(0) by adding small epsilon
+        metrics[f"{prefix}avg_topic_concentration"] = jnp.mean(
+            jnp.max(topic_distributions, axis=1)
+        )
+        metrics[f"{prefix}topic_distribution_entropy"] = -jnp.mean(
+            jnp.sum(topic_distributions * jnp.log(topic_distributions + 1e-12), axis=1)
+        )
+    except Exception as e:
+        metrics[f"{prefix}avg_topic_concentration"] = None
+        metrics[f"{prefix}topic_distribution_entropy"] = None
+        print(
+            f"Warning: Could not calculate topic distribution metrics for {model_name} - {e}"
+        )
 
     return metrics
 
 
 # Main function
-def main(file_path, n_topics=15, max_features=10000, batch_size=1024, seed=42):
+def main(file_path, n_topics=15, max_features=10000, batch_size=2048, seed=42):
     # Set random seed for reproducibility
-    np.random.seed(seed)
+    key = random.PRNGKey(seed)
 
     # Load and preprocess data
     df = load_data(file_path)
@@ -549,16 +803,17 @@ def main(file_path, n_topics=15, max_features=10000, batch_size=1024, seed=42):
 
     # Evaluate both models separately
     lda_metrics = evaluate_model(
-        lda_model, X_train, X_test, feature_names, lda_topic_matrix, "lda"
+        lda_model, key, X_train, X_test, feature_names, lda_topic_matrix, "lda"
     )
     nmf_metrics = evaluate_model(
-        nmf_model, X_train, X_test, feature_names, nmf_topic_matrix, "nmf"
+        nmf_model, key, X_train, X_test, feature_names, nmf_topic_matrix, "nmf"
     )
 
-    # Evaluate combined model
-    combined_metrics = evaluate_model(
-        lda_model, X_train, X_test, feature_names, combined_topic_matrix, "combined"
-    )
+    # Create a combined evaluation that uses both models appropriately
+    combined_metrics = {
+        "combined_n_topics": n_topics,
+        "combined_topic_diversity": calculate_topic_diversity(combined_topic_matrix),
+    }
 
     # Merge all metrics
     metrics = {**lda_metrics, **nmf_metrics, **combined_metrics}
@@ -575,8 +830,10 @@ def main(file_path, n_topics=15, max_features=10000, batch_size=1024, seed=42):
     # Save metrics
     save_metrics(metrics)
 
-    # Identify terms using combined matrix
-    df_weeb, df_furry = identify_subculture_terms(lda_model, feature_names, X)
+    # Use combined topic matrix for term identification
+    df_weeb, df_furry = identify_subculture_terms(
+        combined_topic_matrix, feature_names, X_train
+    )
 
     # Save results
     save_results(df_weeb, df_furry)
@@ -590,4 +847,4 @@ if __name__ == "__main__":
     input_file = "output/dataset-filter/bluesky_ten_million_english_only.csv"
 
     # Run the main function with appropriate batch size for large dataset
-    main(input_file, batch_size=2048)  # Increased batch size for efficiency
+    main(input_file, batch_size=2048)
