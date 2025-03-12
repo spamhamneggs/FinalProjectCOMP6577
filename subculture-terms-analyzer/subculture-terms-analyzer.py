@@ -69,7 +69,7 @@ def load_data(file_path):
     df = df[df["text"].notna()]
     return df
 
-# 
+
 @lru_cache(maxsize=1000)
 def get_term_docs(term_idx, X):
     """Get documents containing a specific term (cached)"""
@@ -571,30 +571,32 @@ def identify_subculture_terms(
     total_docs = X.shape[0]
     doc_counts = np.array(X.astype(bool).sum(axis=0))[0]
     seed_docs_list = list(seed_docs)
-    
+
     # Pre-filter terms with minimum frequency and length
     viable_term_indices = []
     for term_idx, term in enumerate(feature_names_list):
         # Skip very short terms and stopwords early
         if term in stopwords.words("english") or len(term) <= 1:
             continue
-            
+
         # Skip extremely rare terms
         if doc_counts[term_idx] < 5:
             continue
-            
+
         viable_term_indices.append(term_idx)
-    
-    print(f"Processing {len(viable_term_indices)} viable terms for {subculture_name}...")
-    
+
+    print(
+        f"Processing {len(viable_term_indices)} viable terms for {subculture_name}..."
+    )
+
     # Process terms in batches to avoid memory issues
     batch_size = 1024
     for i in range(0, len(viable_term_indices), batch_size):
-        batch_indices = viable_term_indices[i:i+batch_size]
-        
+        batch_indices = viable_term_indices[i : i + batch_size]
+
         for term_idx in batch_indices:
             term = feature_names_list[term_idx]
-            
+
             # Calculate term specificity - skip terms with low specificity early
             term_specificity = calculate_term_specificity(term_idx, X, seed_docs_list)
             if term_specificity < 0.1:
@@ -648,7 +650,9 @@ def identify_subculture_terms(
             )
 
         # Progress update
-        print(f"Processed {min(i+batch_size, len(viable_term_indices))} of {len(viable_term_indices)} terms")
+        print(
+            f"Processed {min(i + batch_size, len(viable_term_indices))} of {len(viable_term_indices)} terms"
+        )
 
     if not processed_terms:
         return pd.DataFrame()
