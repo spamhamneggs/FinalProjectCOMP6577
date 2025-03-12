@@ -684,8 +684,8 @@ def identify_subculture_terms(
             "specificity": 0.15,
             "similarity": 0.30,
             "contextual_relevance": 0.15,
-            "seed_closeness": 0.25,
-            "uniqueness": 0.15,
+            "seed_closeness": 0.20,
+            "uniqueness": 0.20,
         }
 
         df_terms["combined_score"] = sum(
