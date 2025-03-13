@@ -24,7 +24,7 @@ nltk.download("punkt_tab", quiet=True)
 nltk.download("stopwords", quiet=True)
 
 # Create output directories
-os.makedirs("output", exist_ok=True)
+os.makedirs("output/terms-analysis", exist_ok=True)
 
 # Define lists of known weeb and furry terms for initial seeding
 weeb_seed_terms = [
@@ -70,7 +70,6 @@ def load_data(file_path):
     return df
 
 
-@lru_cache(maxsize=1024)
 def get_term_docs(term_idx, X):
     """Get documents containing a specific term (cached)"""
     return set(X[:, term_idx].nonzero()[0])
@@ -258,8 +257,11 @@ def calculate_term_uniqueness(term_idx, X, lda_doc_topics):
     if len(term_docs) <= 1:
         return 0.0
 
+    # Convert set to list for proper indexing
+    term_docs_list = list(term_docs)
+
     # Get topic distribution for these documents
-    term_doc_topics = lda_doc_topics[term_docs]
+    term_doc_topics = lda_doc_topics[term_docs_list]
 
     # Find the dominant topic for each document
     dominant_topics = np.argmax(term_doc_topics, axis=1)
@@ -285,7 +287,7 @@ def calculate_term_uniqueness(term_idx, X, lda_doc_topics):
 
 
 # Save results to files
-def save_results(df_weeb, df_furry, output_dir="output"):
+def save_results(df_weeb, df_furry, output_dir="output/terms-analysis"):
     print("Saving results to files...")
 
     # Ensure output directory exists
@@ -320,7 +322,7 @@ def save_results(df_weeb, df_furry, output_dir="output"):
     print(f"Results saved to {weeb_file} and {furry_file}")
 
 
-def save_metrics(metrics, output_dir="output"):
+def save_metrics(metrics, output_dir="output/terms-analysis"):
     """Save evaluation metrics to a JSON file."""
     print("Saving metrics to file...")
     metrics_file = os.path.join(output_dir, "model_metrics.json")
@@ -606,8 +608,10 @@ def identify_subculture_terms(
             term_docs = get_term_docs(term_idx, X)
 
             if len(term_docs) > 0:
+                # Convert set to list for proper indexing
+                term_docs_list = list(term_docs)
                 # Calculate term's topic distribution as average of its documents
-                term_topic_dist = np.mean(doc_topics[term_docs], axis=0)
+                term_topic_dist = np.mean(doc_topics[term_docs_list], axis=0)
                 term_vector = term_topic_dist.reshape(1, -1)
             else:
                 continue
