@@ -4,7 +4,8 @@ subculture_posts_classified.csv
 
 # Local Temp Folder and Output
 temp/
-output/
+output/dataset-filter/
+output/subculture-classifier/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
