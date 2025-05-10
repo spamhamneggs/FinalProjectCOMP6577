@@ -2,4 +2,8 @@
 
 COMP6577001 Final Project by Team RiZZMATAZZ.
 
-[Roronotalt/bluesky-ten-million](https://huggingface.co/datasets/Roronotalt/bluesky-ten-million) is the dataset used.
+Team RiZZMATAZZ is:
+
+- Rifki Kusmana (The Furry)
+- Imran Muhammad Rahmatullah (The Weeb)
+- Jeffkins Andrew Likadinata (The Normie)
