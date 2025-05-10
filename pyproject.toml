@@ -5,20 +5,27 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "jax>=0.5.2",
+    "flax>=0.10.6",
+    "jax>=0.6.0",
     "matplotlib>=3.10.1",
     "nltk>=3.9.1",
+    "optax>=0.2.4",
     "pandas>=2.2.3",
     "scikit-learn>=1.6.1",
     "scipy>=1.13.1",
     "seaborn>=0.13.2",
+    "tqdm>=4.67.1",
 ]
 
 [tool.uv.workspace]
-members = [ "furry-and-weeb-terms-analyzer/", "subculture-post-classifier/" , "dataset-filter/"]
+members = [
+ "subculture-terms-analyzer",
+ "dataset-filter",
+ "subculture-post-classifier",
+]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.9.9",
+    "ruff>=0.11.7",
     "vulture>=2.14",
 ]
