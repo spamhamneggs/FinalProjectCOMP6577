@@ -1,18 +1,19 @@
 [project]
-name = "subculture-post-classifier"
+name = "bluesky-user-classifier"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "flax>=0.10.6",
-    "jax>=0.6.0",
+    "atproto>=0.0.61",
+    "bitsandbytes>=0.41.0",
     "matplotlib>=3.10.3",
-    "nltk>=3.9.1",
-    "optax>=0.2.4",
+    "numpy>=1.26.4",
     "pandas>=2.2.3",
     "scikit-learn>=1.6.1",
-    "scipy>=1.13.1",
     "seaborn>=0.13.2",
+    "torch>=2.7.0",
     "tqdm>=4.67.1",
+    "transformers>=4.51.3",
+    "unsloth>=2025.4.7",
 ]

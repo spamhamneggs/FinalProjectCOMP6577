@@ -10,6 +10,7 @@ members = [
  "subculture-terms-analyzer",
  "dataset-filter",
  "subculture-post-classifier",
+ "bluesky-user-classifier",
 ]
 
 [dependency-groups]

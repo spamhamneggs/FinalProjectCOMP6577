@@ -1,0 +1,27 @@
+Classification Metrics Report
+===========================
+
+Overall Metrics:
+Accuracy: 0.9229
+Macro Avg F1-Score: 0.6802
+Weighted Avg F1-Score: 0.9379
+
+Per-Class Metrics:
+
+NORMIE:
+Precision: 0.9984
+Recall: 0.9218
+F1-Score: 0.9586
+Support: 4724909.0
+
+FURRY:
+Precision: 0.3177
+Recall: 0.9361
+F1-Score: 0.4744
+Support: 84705.0
+
+WEEB:
+Precision: 0.4474
+Recall: 0.9466
+F1-Score: 0.6076
+Support: 177345.0

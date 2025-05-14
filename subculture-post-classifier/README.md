@@ -1,6 +1,6 @@
 # Subculture Post Classifier
 
-This script classifies text posts into subcultural categories ("normie", "furry", "weeb", or "both") using a Text Convolutional Neural Network (CNN) built with JAX and Flax. It leverages pre-identified subculture-specific term lists for initial data labeling and feature enrichment.
+This script classifies text posts into subcultural categories ("normie", "furry", "weeb") using a Text Convolutional Neural Network (CNN) built with JAX and Flax. It leverages pre-identified subculture-specific term lists for initial data labeling and feature enrichment.
 
 ## Overview
 

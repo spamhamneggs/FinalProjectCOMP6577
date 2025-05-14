@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import pandas as pd
 import re
 import string
@@ -13,12 +14,23 @@ import os
 from tqdm.auto import tqdm  # Import tqdm for progress bars
 import gc  # Garbage collector
 from collections import Counter  # For vocabulary building
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+import json  # For saving metrics
 
 # --- Configuration ---
 FURRY_TERMS_FILE = "furry_terms.csv"
 WEEB_TERMS_FILE = "weeb_terms.csv"
 POSTS_FILE = "bluesky_ten_million_english_only.csv"
-OUTPUT_CSV_FILE = "output/subculture-classifier/subculture_posts_classified.csv"
+OUTPUT_DIR = "output/post-classifier"
+OUTPUT_METRICS_DIR = "metrics/post-classifier"
+OUTPUT_CSV_FILENAME = "subculture_posts_classified_3class.csv"
+OUTPUT_METRICS_TRAIN_FILENAME = "training_metrics_3class.txt"
+OUTPUT_METRICS_TEST_FILENAME = "test_metrics_3class.txt"
+OUTPUT_CM_TRAIN_FILENAME = "training_cm_3class.png"
+OUTPUT_CM_TEST_FILENAME = "test_cm_3class.png"
+
 POST_TEXT_COLUMN = "text"
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
@@ -31,9 +43,9 @@ SECONDARY_RELATIVE_FACTOR = (
 
 # --- Term Filtering & Labeling Configuration ---
 SCORE_COLUMN = "combined_score"
-SCORE_PERCENTILE_THRESHOLD = 0.80  # Keep top 20% of terms by score
+SCORE_PERCENTILE_THRESHOLD = 0.85  # Keep top 15% of terms by score
 MIN_SUM_SCORE_LABELING = (
-    0.95  # Min sum of term scores to activate a category for labeling
+    0.7  # Min sum of term scores to activate a category for labeling
 )
 
 # --- Model & Tokenization Configuration ---
@@ -46,7 +58,7 @@ DROPOUT_RATE = 0.5
 
 # --- Optimizer Configuration ---
 LEARNING_RATE = 1e-4
-WEIGHT_DECAY = 1e-4
+WEIGHT_DECAY = 2e-4
 
 # --- Batching Configuration ---
 TRAIN_BATCH_SIZE = 64
@@ -56,9 +68,9 @@ PRED_BATCH_SIZE = 512
 PAD_TOKEN = "<PAD>"
 UNK_TOKEN = "<UNK>"
 
-# --- Label Mapping ---
-label_map = {"normie": 0, "furry": 1, "weeb": 2, "both": 3}
-num_classes = len(label_map)
+# --- MODIFIED: Label Mapping (3 classes for training) ---
+label_map = {"normie": 0, "furry": 1, "weeb": 2}
+num_classes = len(label_map)  # Will be 3
 id2label = {v: k for k, v in label_map.items()}
 
 
@@ -69,31 +81,29 @@ def load_stop_words(file_path):
     Returns a set of stop words.
     """
     stop_words = set()
-
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             for line in file:
-                # Strip whitespace and add to set
                 word = line.strip()
-                if word:  # Only add non-empty strings
-                    stop_words.add(word)
-        print(f"Successfully loaded {len(stop_words)} stop words.")
+                if word:
+                    stop_words.add(word)  # Assuming stopwords file is already processed
+        print(f"Successfully loaded {len(stop_words)} stop words from {file_path}.")
     except FileNotFoundError:
-        print(f"Error: File not found at {file_path}")
+        print(f"Error: File not found at {file_path}. Using empty set.")
     except Exception as e:
-        print(f"Error loading stop words: {e}")
-
+        print(f"Error loading stop words: {e}. Using empty set.")
     return stop_words
 
 
-STOP_WORDS = load_stop_words("./subculture-post-classifier/stopwords-en.txt")
+STOP_WORDS = load_stop_words("./shared/stopwords-en.txt")
+print(f"Total stop words being used: {len(STOP_WORDS)}.")
 
 
-# --- JAX/Flax CNN Model Definition --- (Remains the same)
+# --- JAX/Flax CNN Model Definition --- (Output layer will adapt to num_classes)
 class TextCNN(nn.Module):
     vocab_size: int
     embed_dim: int
-    num_classes: int
+    num_classes: int  # This will be 3
     num_filters: int
     filter_sizes: list[int]
     dropout_rate: float
@@ -114,13 +124,13 @@ class TextCNN(nn.Module):
         concatenated = nn.Dropout(rate=self.dropout_rate, deterministic=deterministic)(
             concatenated
         )
-        logits = nn.Dense(features=self.num_classes)(concatenated)
+        logits = nn.Dense(features=self.num_classes)(
+            concatenated
+        )  # Output features = 3
         return logits
 
 
 # --- Helper Functions ---
-
-
 def load_terms_with_scores(
     filepath, score_column, score_percentile_threshold, stop_words
 ):
@@ -199,6 +209,7 @@ def preprocess_text_for_cnn(text):
     return text
 
 
+# MODIFIED: generate_label_sum_score for 3 classes
 def generate_label_sum_score(
     post_text, furry_terms_map, weeb_terms_map, min_sum_score_threshold
 ):
@@ -213,12 +224,18 @@ def generate_label_sum_score(
     )
     is_furry_active = current_furry_sum >= min_sum_score_threshold
     is_weeb_active = current_weeb_sum >= min_sum_score_threshold
-    if is_furry_active and not is_weeb_active:
+
+    if is_furry_active and is_weeb_active:
+        # If both are active, assign to the one with the higher sum for training
+        # If sums are equal, prioritize 'weeb' (arbitrary choice, can be changed)
+        if current_weeb_sum >= current_furry_sum:
+            return label_map["weeb"]
+        else:
+            return label_map["furry"]
+    elif is_furry_active:
         return label_map["furry"]
-    elif is_weeb_active and not is_furry_active:
+    elif is_weeb_active:
         return label_map["weeb"]
-    elif is_furry_active and is_weeb_active:
-        return label_map["both"]
     else:
         return label_map["normie"]
 
@@ -235,7 +252,7 @@ def find_terms_in_post_optimized(post_text, terms_map):
 def build_vocab(texts, vocab_size, min_freq=2):
     print("Building vocabulary...")
     word_counts = Counter()
-    for text in tqdm(texts, desc="Counting words", mininterval=10.0):  # Throttle TQDM
+    for text in tqdm(texts, desc="Counting words", mininterval=10.0):
         words = [word for word in text.split() if word not in STOP_WORDS]
         word_counts.update(words)
     most_common_words = [
@@ -265,8 +282,10 @@ def tokenize_and_pad(texts, word_to_index, max_length):
     return np.array(tokenized_sequences, dtype=np.int32)
 
 
-# --- Loss and Accuracy Functions ---
 def weighted_cross_entropy_loss(logits, labels, class_weights):
+    # Logits shape: (batch_size, num_classes=3)
+    # Labels shape: (batch_size,)
+    # Class_weights shape: (num_classes=3,)
     one_hot_labels = jax.nn.one_hot(labels, num_classes=logits.shape[-1])
     log_probs = jax.nn.log_softmax(logits.astype(jnp.float32))
     unweighted_loss = -jnp.sum(one_hot_labels * log_probs, axis=-1)
@@ -316,10 +335,72 @@ def predict_step(state, batch_sequences):
     return logits
 
 
-# --- Main Execution ---
+# --- Metrics Functions ---
+def plot_confusion_matrix(
+    y_true, y_pred, labels, title="Confusion Matrix", filepath="confusion_matrix.png"
+):
+    cm = confusion_matrix(
+        y_true, y_pred, labels=np.arange(len(labels))
+    )  # Ensure labels match indices
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels
+    )
+    plt.title(title)
+    plt.ylabel("True Label")
+    plt.xlabel("Predicted Label")
+    plt.tight_layout()
+    plt.savefig(filepath)
+    plt.close()
 
-# Create output directory if it doesn't exist
-os.makedirs("output/subculture-classifier", exist_ok=True)
+
+def calculate_metrics(y_true, y_pred, target_names_list):
+    report = classification_report(
+        y_true,
+        y_pred,
+        target_names=target_names_list,
+        output_dict=True,
+        zero_division=0,
+    )
+    return report
+
+
+def save_metrics_report(metrics_dict, filename):
+    with open(filename, "w") as f:
+        f.write("Classification Metrics Report\n")
+        f.write("===========================\n\n")
+        f.write("Overall Metrics:\n")
+        f.write(f"Accuracy: {metrics_dict.get('accuracy', 'N/A'):.4f}\n")
+        if "macro avg" in metrics_dict:
+            f.write(
+                f"Macro Avg F1-Score: {metrics_dict['macro avg'].get('f1-score', 'N/A'):.4f}\n"
+            )
+        if "weighted avg" in metrics_dict:
+            f.write(
+                f"Weighted Avg F1-Score: {metrics_dict['weighted avg'].get('f1-score', 'N/A'):.4f}\n\n"
+            )
+        f.write("Per-Class Metrics:\n")
+        # Use the global id2label to iterate in defined order
+        for label_idx, class_name_str in id2label.items():
+            if class_name_str in metrics_dict:
+                metrics = metrics_dict[class_name_str]
+                f.write(f"\n{class_name_str.upper()}:\n")
+                f.write(f"Precision: {metrics.get('precision', 'N/A'):.4f}\n")
+                f.write(f"Recall: {metrics.get('recall', 'N/A'):.4f}\n")
+                f.write(f"F1-Score: {metrics.get('f1-score', 'N/A'):.4f}\n")
+                f.write(f"Support: {metrics.get('support', 'N/A')}\n")
+
+
+# --- Main Execution ---
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(OUTPUT_METRICS_DIR, exist_ok=True)
+# Define full paths for outputs
+output_csv_path = os.path.join(OUTPUT_DIR, OUTPUT_CSV_FILENAME)
+output_metrics_train_path = os.path.join(OUTPUT_METRICS_DIR, OUTPUT_METRICS_TRAIN_FILENAME)
+output_metrics_test_path = os.path.join(OUTPUT_METRICS_DIR, OUTPUT_METRICS_TEST_FILENAME)
+output_cm_train_path = os.path.join(OUTPUT_METRICS_DIR, OUTPUT_CM_TRAIN_FILENAME)
+output_cm_test_path = os.path.join(OUTPUT_METRICS_DIR, OUTPUT_CM_TEST_FILENAME)
+
 
 print("Loading terms...")
 furry_terms_path = os.path.join("output", "terms-analysis", FURRY_TERMS_FILE)
@@ -359,7 +440,7 @@ try:
         preprocess_text_for_cnn
     )
 
-    print("\nLabel Distribution (using summed term scores for labeling):")
+    print("\nLabel Distribution (for 3-class training):")
     label_counts = posts_df["label"].map(id2label).value_counts()
     print(label_counts)
     y_labels_full = posts_df["label"].values
@@ -380,9 +461,11 @@ try:
         weights_calculated = compute_class_weight(
             class_weight="balanced", classes=unique_train_labels, y=train_labels
         )
-        class_weights_np = np.ones(num_classes, dtype=np.float32)
+        class_weights_np = np.ones(
+            num_classes, dtype=np.float32
+        )  # num_classes is now 3
         for class_label, weight in zip(unique_train_labels, weights_calculated):
-            if class_label < num_classes:
+            if class_label < num_classes:  # Ensure index is valid for the 3 classes
                 class_weights_np[class_label] = weight
     else:
         print("Warning: Only one class found in training data. Using uniform weights.")
@@ -410,7 +493,7 @@ try:
     model = TextCNN(
         vocab_size=actual_vocab_size,
         embed_dim=EMBED_DIM,
-        num_classes=num_classes,
+        num_classes=num_classes,  # This is now 3
         num_filters=NUM_FILTERS,
         filter_sizes=FILTER_SIZES,
         dropout_rate=DROPOUT_RATE,
@@ -425,6 +508,8 @@ try:
     print("\nStarting CNN training (with class weights & regularization)...")
     num_epochs = 5
     dropout_rng = dropout_init_key
+    final_epoch_metrics = {}
+
     for epoch in range(num_epochs):
         perm = np.random.permutation(train_indices)
         epoch_loss, epoch_accuracy, num_batches = 0.0, 0.0, 0
@@ -481,16 +566,121 @@ try:
             print(
                 f"Epoch {epoch + 1}/{num_epochs} Summary - Avg Weighted Loss: {avg_epoch_loss:.4f}, Avg Accuracy: {avg_epoch_accuracy:.4f}"
             )
+            if epoch == num_epochs - 1:  # Store metrics from the last completed epoch
+                final_epoch_metrics["final_training_avg_weighted_loss"] = float(
+                    avg_epoch_loss
+                )
+                final_epoch_metrics["final_training_avg_accuracy"] = float(
+                    avg_epoch_accuracy
+                )
         else:
             print(f"Epoch {epoch + 1}/{num_epochs} - No batches processed.")
     print("Training finished.")
 
-    print("\nRunning predictions on the full dataset (CNN)...")
+    # --- Calculate and Save Training & Test Metrics ---
+    # (Using the trained model state)
+    target_names_for_report = [
+        id2label[i] for i in range(num_classes)
+    ]  # normie, furry, weeb
+
+    print("\nCalculating training metrics...")
+    train_predictions_list = []
+    train_true_labels_list = y_labels_full[
+        train_indices
+    ]  # Get all true labels for training set
+    for i in tqdm(
+        range(0, len(train_indices), PRED_BATCH_SIZE),
+        desc="Getting training predictions",
+        mininterval=10.0,
+    ):
+        batch_indices = train_indices[i : i + PRED_BATCH_SIZE]
+        batch_texts = posts_df.loc[batch_indices, "processed_text"].tolist()
+        batch_sequences = tokenize_and_pad(batch_texts, word_to_index, MAX_SEQ_LENGTH)
+        batch_sequences_jax = jnp.array(batch_sequences)
+        batch_logits = predict_step(state, batch_sequences_jax)
+        batch_probabilities = jax.nn.softmax(batch_logits.astype(jnp.float32), axis=-1)
+        train_predictions_list.extend(np.argmax(np.array(batch_probabilities), axis=1))
+        del (
+            batch_texts,
+            batch_sequences,
+            batch_sequences_jax,
+            batch_logits,
+            batch_probabilities,
+        )
+        gc.collect()
+
+    train_report_dict = calculate_metrics(
+        train_true_labels_list, train_predictions_list, target_names_for_report
+    )
+    save_metrics_report(train_report_dict, output_metrics_train_path)
+    plot_confusion_matrix(
+        train_true_labels_list,
+        train_predictions_list,
+        labels=target_names_for_report,
+        title="Training Confusion Matrix",
+        filepath=output_cm_train_path,
+    )
+    del train_predictions_list, train_true_labels_list  # Free memory
+    gc.collect()
+
+    print("\nCalculating test metrics...")
+    test_predictions_list = []
+    test_true_labels_list = y_labels_full[
+        test_indices
+    ]  # Get all true labels for test set
+    for i in tqdm(
+        range(0, len(test_indices), PRED_BATCH_SIZE),
+        desc="Getting test predictions",
+        mininterval=10.0,
+    ):
+        batch_indices = test_indices[i : i + PRED_BATCH_SIZE]
+        batch_texts = posts_df.loc[batch_indices, "processed_text"].tolist()
+        batch_sequences = tokenize_and_pad(batch_texts, word_to_index, MAX_SEQ_LENGTH)
+        batch_sequences_jax = jnp.array(batch_sequences)
+        batch_logits = predict_step(state, batch_sequences_jax)
+        batch_probabilities = jax.nn.softmax(batch_logits.astype(jnp.float32), axis=-1)
+        test_predictions_list.extend(np.argmax(np.array(batch_probabilities), axis=1))
+        del (
+            batch_texts,
+            batch_sequences,
+            batch_sequences_jax,
+            batch_logits,
+            batch_probabilities,
+        )
+        gc.collect()
+
+    test_report_dict = calculate_metrics(
+        test_true_labels_list, test_predictions_list, target_names_for_report
+    )
+    save_metrics_report(test_report_dict, output_metrics_test_path)
+    plot_confusion_matrix(
+        test_true_labels_list,
+        test_predictions_list,
+        labels=target_names_for_report,
+        title="Test Confusion Matrix",
+        filepath=output_cm_test_path,
+    )
+    print("\nMetrics have been saved to specified output paths.")
+    print("\nTest Set Metrics Summary:")
+    print(f"Accuracy: {test_report_dict.get('accuracy', 'N/A'):.4f}")
+    if "macro avg" in test_report_dict:
+        print(
+            f"Macro Avg F1-Score: {test_report_dict['macro avg'].get('f1-score', 'N/A'):.4f}"
+        )
+    if "weighted avg" in test_report_dict:
+        print(
+            f"Weighted Avg F1-Score: {test_report_dict['weighted avg'].get('f1-score', 'N/A'):.4f}"
+        )
+    del test_predictions_list, test_true_labels_list  # Free memory
+    gc.collect()
+
+    # --- Prediction on Full Dataset for CSV output ---
+    print("\nRunning predictions on the full dataset for CSV output (CNN)...")
     all_probabilities_list = []
     full_indices = np.arange(len(posts_df))
     for i_batch in tqdm(
         range(0, len(full_indices), PRED_BATCH_SIZE),
-        desc="Predicting",
+        desc="Predicting for CSV",
         mininterval=10.0,
     ):
         batch_indices = full_indices[i_batch : i_batch + PRED_BATCH_SIZE]
@@ -512,89 +702,81 @@ try:
             batch_probabilities,
         )
         gc.collect()
-    print("Concatenating batch probabilities...")
-    probabilities_np = np.concatenate(all_probabilities_list, axis=0)
+    print("Concatenating batch probabilities for CSV...")
+    probabilities_np_full = np.concatenate(
+        all_probabilities_list, axis=0
+    )  # For full dataset
     del all_probabilities_list
     gc.collect()
 
-    # 9. Determine Categories (Unpack 'both' with DYNAMIC secondary threshold)
-    print("Determining primary and secondary categories (dynamic threshold)...")
+    # --- MODIFIED: Step 9 - Determine Categories (for 3-class model output) ---
+    print(
+        "Determining primary and secondary categories for CSV..."
+    )
     primary_categories_final = []
     secondary_categories_final = []
-    prob_normie_all = probabilities_np[:, label_map["normie"]]
-    prob_furry_all = probabilities_np[:, label_map["furry"]]
-    prob_weeb_all = probabilities_np[:, label_map["weeb"]]
-    prob_both_all = probabilities_np[:, label_map["both"]]
+
+    # Probabilities from the 3-class model
+    prob_normie_all = probabilities_np_full[:, label_map["normie"]]
+    prob_furry_all = probabilities_np_full[:, label_map["furry"]]
+    prob_weeb_all = probabilities_np_full[:, label_map["weeb"]]
 
     for i in tqdm(
-        range(len(probabilities_np)),
-        desc="Assigning Final Categories",
+        range(len(probabilities_np_full)),
+        desc="Assigning Final Categories for CSV",
         mininterval=10.0,
     ):
         p_normie = prob_normie_all[i]
         p_furry = prob_furry_all[i]
         p_weeb = prob_weeb_all[i]
-        p_both = prob_both_all[i]
-        assigned_primary = None
-        assigned_secondary = None
-        potential_secondary_category = None
-        potential_secondary_prob = -1.0
-        primary_prob_raw = -1.0  # Store the raw probability of the assigned primary
 
-        # Determine primary category based on effective scores
-        effective_furry_score = p_furry + p_both
-        effective_weeb_score = p_weeb + p_both
-        effective_normie_score = p_normie
-
-        if (
-            effective_furry_score >= effective_weeb_score
-            and effective_furry_score >= effective_normie_score
-        ):
-            assigned_primary = "furry"
-            primary_prob_raw = p_furry  # Raw prob of the primary
-            potential_secondary_category = "weeb"
-            potential_secondary_prob = p_weeb
-        elif (
-            effective_weeb_score > effective_furry_score
-            and effective_weeb_score >= effective_normie_score
-        ):
-            assigned_primary = "weeb"
-            primary_prob_raw = p_weeb  # Raw prob of the primary
-            potential_secondary_category = "furry"
-            potential_secondary_prob = p_furry
-        else:
+        # Determine primary category
+        # Order of checks matters if probabilities are equal; here normie -> furry -> weeb
+        if p_normie >= p_furry and p_normie >= p_weeb:
             assigned_primary = "normie"
-            primary_prob_raw = p_normie  # Raw prob of the primary
-            # Potential secondary is the higher of furry or weeb
+            primary_prob_raw = p_normie
+            # Potential secondaries are furry or weeb
             if p_furry >= p_weeb:
                 potential_secondary_category = "furry"
                 potential_secondary_prob = p_furry
             else:
                 potential_secondary_category = "weeb"
                 potential_secondary_prob = p_weeb
+        elif p_furry >= p_normie and p_furry >= p_weeb:
+            assigned_primary = "furry"
+            primary_prob_raw = p_furry
+            # Potential secondary is weeb (normie is not a subculture secondary)
+            potential_secondary_category = "weeb"
+            potential_secondary_prob = p_weeb
+        else:  # Weeb must be highest
+            assigned_primary = "weeb"
+            primary_prob_raw = p_weeb
+            # Potential secondary is furry
+            potential_secondary_category = "furry"
+            potential_secondary_prob = p_furry
 
-        # Apply dynamic threshold checks for the potential secondary category
-        if potential_secondary_category is not None:
-            # Check 1: Absolute threshold
+        assigned_secondary = None
+        if (
+            potential_secondary_category is not None
+            and potential_secondary_category != "normie"
+        ):  # Don't assign normie as secondary
             if potential_secondary_prob > MIN_SECONDARY_ABS_THRESHOLD:
-                # Check 2: Relative threshold (Secondary prob must be >= factor * Primary prob)
-                # Avoid division by zero with a small epsilon
                 if (
                     potential_secondary_prob
                     >= primary_prob_raw * SECONDARY_RELATIVE_FACTOR
                 ):
-                    # Check 3: Ensure secondary is not same as primary (shouldn't happen with this logic, but safe check)
-                    if assigned_primary != potential_secondary_category:
+                    if (
+                        assigned_primary != potential_secondary_category
+                    ):  # Should always be true if primary != normie
                         assigned_secondary = potential_secondary_category
 
         primary_categories_final.append(assigned_primary)
-        secondary_categories_final.append(
-            assigned_secondary
-        )  # Will be None if checks failed
+        secondary_categories_final.append(assigned_secondary)
 
-    del prob_normie_all, prob_furry_all, prob_weeb_all, prob_both_all  # Free memory
+    del prob_normie_all, prob_furry_all, prob_weeb_all
     gc.collect()
 
+    # 10. Find Matching Terms
     print(
         "Finding specific terms in original posts (using score-percentile-filtered term lists)..."
     )
@@ -607,31 +789,55 @@ try:
         lambda x: find_terms_in_post_optimized(x, weeb_terms_map)
     )
 
+    # 11. Create Output DataFrame
     print("Creating final output DataFrame...")
     output_df = pd.DataFrame(
         {
             "text": posts_df["original_text"],
-            "primary_category": primary_categories_final,  # Use the new unpacked categories
-            "secondary_category": secondary_categories_final,  # Use the new unpacked categories
-            "weeb_score": probabilities_np[
-                :, label_map["weeb"]
-            ],  # Model's raw prob for 'weeb'
-            "furry_score": probabilities_np[
-                :, label_map["furry"]
-            ],  # Model's raw prob for 'furry'
+            "primary_category": primary_categories_final,
+            "secondary_category": secondary_categories_final,
+            # Scores for weeb and furry from the 3-class model's direct output
+            "weeb_score": probabilities_np_full[:, label_map["weeb"]]
+            if "weeb" in label_map
+            else np.nan,  # Ensure key exists
+            "furry_score": probabilities_np_full[:, label_map["furry"]]
+            if "furry" in label_map
+            else np.nan,  # Ensure key exists
             "top_weeb_terms": posts_df["found_weeb_terms"],
             "top_furry_terms": posts_df["found_furry_terms"],
         }
     )
-    del posts_df, primary_categories_final, secondary_categories_final
+    del (
+        posts_df,
+        primary_categories_final,
+        secondary_categories_final,
+        probabilities_np_full,
+    )
     gc.collect()
     output_df["weeb_score"] = output_df["weeb_score"].round(4)
     output_df["furry_score"] = output_df["furry_score"].round(4)
     output_df["secondary_category"] = output_df["secondary_category"].fillna("None")
 
-    print(f"Saving results to {OUTPUT_CSV_FILE}...")
-    output_df.to_csv(OUTPUT_CSV_FILE, index=False)
+    # 12. Save Results and Final Training Metrics (if not saved already)
+    print(f"Saving results to {output_csv_path}...")
+    output_df.to_csv(output_csv_path, index=False)
     print("Output CSV saved successfully.")
+
+    # Save final epoch metrics (if not already captured and saved during training loop)
+    # This part is slightly redundant if training completed all epochs, but good for robustness
+    if final_epoch_metrics:  # Check if it has content
+        print(
+            f"Saving final training epoch metrics to {os.path.join(OUTPUT_METRICS_DIR, 'final_epoch_training_metrics.json')}..."
+        )
+        try:
+            with open(
+                os.path.join(OUTPUT_DIR, "final_epoch_training_metrics.json"), "w"
+            ) as f:
+                json.dump(final_epoch_metrics, f, indent=4)
+            print("Final epoch training metrics saved successfully.")
+        except Exception as e:
+            print(f"Error saving final epoch training metrics: {e}")
+
     print("\n--- Head of Output CSV ---")
     print(output_df.head())
     print("\n--- Value Counts for Final Primary Category ---")

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import json
 import os
 import re
@@ -8,7 +9,6 @@ import jax.random as random
 import nltk
 import numpy as np
 import pandas as pd
-from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from scipy.stats import entropy
 from sklearn.decomposition import LatentDirichletAllocation, MiniBatchNMF
@@ -21,10 +21,10 @@ from sklearn.preprocessing import MinMaxScaler
 # Download necessary NLTK resources
 nltk.download("punkt", quiet=True)
 nltk.download("punkt_tab", quiet=True)
-nltk.download("stopwords", quiet=True)
 
 # Create output directories
 os.makedirs("output/terms-analysis", exist_ok=True)
+os.makedirs("metrics/terms-analysis", exist_ok=True)
 
 # Define lists of known weeb and furry terms for initial seeding
 weeb_seed_terms = [
@@ -85,7 +85,7 @@ def preprocess_text(text):
     text = text.lower()
 
     # Remove URLs
-    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"http\S+|www\S+|https\S+", " ", text, flags=re.MULTILINE)
 
     # Remove all punctuation
     text = re.sub(r"[^\w\s]", "", text)
@@ -96,14 +96,37 @@ def preprocess_text(text):
     return text
 
 
+def load_stop_words(file_path):
+    """
+    Load stop words from a text file with one word per line.
+    Returns a set of stop words.
+    """
+    stop_words = set()
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            for line in file:
+                word = line.strip()
+                if word:
+                    stop_words.add(word)  # Assuming stopwords file is already processed
+        print(f"Successfully loaded {len(stop_words)} stop words from {file_path}.")
+    except FileNotFoundError:
+        print(f"Error: File not found at {file_path}. Using empty set.")
+    except Exception as e:
+        print(f"Error loading stop words: {e}. Using empty set.")
+    return stop_words
+
+
+# Load stopwords
+STOP_WORDS = load_stop_words("./shared/stopwords-en.txt")
+
+
 # Tokenization function
 def tokenize_text(text):
     if not isinstance(text, str):
         return []
     tokens = word_tokenize(text)
-    stop_words = set(stopwords.words("english"))
     # Don't filter out short words as they might be relevant terms
-    tokens = [token for token in tokens if token not in stop_words]
+    tokens = [token for token in tokens if token not in STOP_WORDS]
     return tokens
 
 
@@ -118,7 +141,6 @@ def extract_features(texts, max_features=5000, min_df=20, max_df=0.90):
         tokenizer=tokenize_text,
         preprocessor=preprocess_text,
         lowercase=False,
-        stop_words="english",
         ngram_range=(1, 2),
         sublinear_tf=True,  # Apply sublinear scaling to term frequencies
         norm="l2",  # Use L2 normalization
@@ -322,10 +344,10 @@ def save_results(df_weeb, df_furry, output_dir="output/terms-analysis"):
     print(f"Results saved to {weeb_file} and {furry_file}")
 
 
-def save_metrics(metrics, output_dir="output/terms-analysis"):
+def save_metrics(metrics, metrics_output_dir="metrics/terms-analysis"):
     """Save evaluation metrics to a JSON file."""
     print("Saving metrics to file...")
-    metrics_file = os.path.join(output_dir, "model_metrics.json")
+    metrics_file = os.path.join(metrics_output_dir, "model_metrics.json")
 
     # Format floating point numbers and convert JAX arrays to NumPy arrays
     formatted_metrics = {}
@@ -576,9 +598,10 @@ def identify_subculture_terms(
 
     # Pre-filter terms with minimum frequency and length
     viable_term_indices = []
+
     for term_idx, term in enumerate(feature_names_list):
         # Skip very short terms and stopwords early
-        if term in stopwords.words("english") or len(term) <= 1:
+        if term in STOP_WORDS or len(term) <= 1:
             continue
 
         # Skip extremely rare terms
@@ -689,15 +712,20 @@ def identify_subculture_terms(
 
         # Calculate combined score with existing weights
         weights = {
-            "specificity": 0.15,
-            "similarity": 0.30,
+            "specificity": 0.25,
+            "similarity": 0.20,
             "contextual_relevance": 0.15,
-            "seed_closeness": 0.20,
-            "uniqueness": 0.20,
+            "seed_closeness": 0.15,
+            "uniqueness": 0.25,
         }
 
-        df_terms["combined_score"] = sum(
-            weights[feature] * df_terms[f"normalized_{feature}"] for feature in features
+        df_terms["combined_score"] = (
+            weights["specificity"] * df_terms["normalized_specificity"]
+            + weights["similarity"] * df_terms["normalized_similarity"]
+            + weights["contextual_relevance"]
+            * (1 - df_terms["normalized_contextual_relevance"])  # Inverted contribution
+            + weights["seed_closeness"] * df_terms["normalized_seed_closeness"]
+            + weights["uniqueness"] * df_terms["normalized_uniqueness"]
         )
 
     return df_terms.sort_values("combined_score", ascending=False)

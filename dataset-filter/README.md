@@ -1,6 +1,6 @@
 # Dataset Filter Script
 
-This script loads a dataset from Hugging Face, filters it to include only English language posts, and saves the filtered data to a CSV file.
+This script loads the `Roronotalt/bluesky-ten-million` dataset from Hugging Face, filters it to include only English language posts, and saves the filtered data to a CSV file.
 
 ## Description
 

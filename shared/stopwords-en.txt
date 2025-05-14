@@ -196,7 +196,7 @@ cm
 cmon
 cn
 co
-co.
+co
 com
 come
 comes
@@ -295,7 +295,7 @@ er
 es
 especially
 et
-et-al
+et al
 etc
 even
 evenly
@@ -481,7 +481,7 @@ id
 ill
 im
 ive
-i.e.
+ie
 id
 ie
 if
@@ -497,7 +497,7 @@ important
 in
 inasmuch
 inc
-inc.
+inc
 indeed
 index
 indicate
@@ -708,7 +708,7 @@ nine
 ninety
 nl
 no
-no-one
+no one
 nobody
 non
 none

@@ -11,7 +11,8 @@ The script processes a large text corpus to discover and rank terms relevant to 
 1. **Data Loading & Preprocessing**:
     * Loads text data from a specified CSV file.
     * Performs text cleaning: lowercasing, removal of URLs, punctuation, and standalone numbers.
-    * Tokenizes text and removes English stopwords using NLTK.
+    * Tokenizes text using NLTK.
+    * Uses `stopwords-iso/stopwords-en` as the stopwords list to filter out
 
 2. **Feature Extraction**:
     * Utilizes TF-IDF (Term Frequency-Inverse Document Frequency) to vectorize the preprocessed text, creating a numerical representation of the corpus.
@@ -56,7 +57,7 @@ The script processes a large text corpus to discover and rank terms relevant to 
   * `scipy`
   * `scikit-learn`
 
-* **NLTK Resources**: The script automatically attempts to download `punkt`, `punkt_tab`, and `stopwords` from NLTK.
+* **NLTK Resources**: The script automatically attempts to download `punkt` and `punkt_tab` from NLTK.
 * **Input Data**: Requires an input CSV file located at `output/dataset-filter/bluesky_ten_million_english_only.csv`. This file is expected to be the output of a preceding data filtering script (like `dataset-filter.py` if used in conjunction). The CSV should contain a column named `text` with the textual data.
 
 ## Output
