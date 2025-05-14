@@ -117,7 +117,7 @@ def load_stop_words(file_path):
 
 
 # Load stopwords
-STOP_WORDS = load_stop_words("./shared/stopwords-en.txt")
+STOP_WORDS = load_stop_words("./thirdparty/stopwords-en.txt")
 
 
 # Tokenization function
