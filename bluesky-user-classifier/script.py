@@ -377,6 +377,16 @@ class BlueskyClassifier:
             # true_label_heuristic is already a combined "Primary-Secondary" string
             true_combined_label = item["true_label_heuristic"]
 
+            # Prepare prompt for inference (Unsloth/Gemma specific with ChatML)
+            # The model expects the format: <|user|>\n{prompt}\n<|assistant|>
+            # It will then generate the assistant's response.
+            # Note: Unsloth's FastLanguageModel.generate handles chat templates internally if available.
+            # For explicit control or if issues arise, manual formatting is safer.
+            # Let's use the manual formatting to be sure.
+
+            # Gemma uses specific tokens <start_of_turn> and <end_of_turn>
+            # For Unsloth fine-tuned Gemma, it often maps to a common chat template like ChatML.
+            # The SFTTrainer formatting_func uses <|user|> and <|assistant|>. We should match this for inference.
             formatted_prompt_for_inference = f"<|user|>\n{prompt_text}\n<|assistant|>"
             # Ensure max_length accounts for prompt and potential response length
             inputs = self.tokenizer(
@@ -480,13 +490,20 @@ class BlueskyClassifier:
         learning_rate: float = 2e-4,
         eval_split_size: float = 0.20,
     ):
+        """Fine-tune the model using the prepared data and evaluate it."""
         if self.model is None or self.tokenizer is None:
             self.setup_model()
+
+        # Prepare all data
         all_prepared_data = self._prepare_training_data(bluesky_data_csv)
         if not all_prepared_data:
             print("No training data prepared. Skipping fine-tuning and evaluation.")
             return None
 
+        # Extract prompts, responses, and true labels for splitting
+        # The 'true_label_heuristic' is what we'll use as ground truth for evaluation
+
+        # Stratification needs labels. We use 'true_label_heuristic'.
         labels_for_stratification = [
             item["true_label_heuristic"] for item in all_prepared_data
         ]
@@ -562,8 +579,9 @@ class BlueskyClassifier:
         eos_token = self.tokenizer.eos_token
 
         def formatting_func(example):
-            prompt_text = str(example.get("prompt", ""))
-            response_text = str(example.get("response", ""))
+            prompt_text = str(example.get("prompt", ""))  # Robust access
+            response_text = str(example.get("response", ""))  # Robust access
+            # Standard ChatML format that Unsloth often uses for Gemma fine-tuning
             return f"<|user|>\n{prompt_text}\n<|assistant|>\n{response_text}{eos_token}"
 
         training_args = TrainingArguments(
