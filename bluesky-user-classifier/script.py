@@ -4,7 +4,7 @@ import random
 import argparse
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from tqdm import tqdm
 import torch
 import matplotlib.pyplot as plt
@@ -42,10 +42,38 @@ class BlueskyClassifier:
         self.model = None
         self.tokenizer = None
 
-        # Define the canonical labels for classification
-        self.defined_labels = sorted(
-            ["Weeb", "Furry", "Slight Weeb", "Slight Furry", "Normie"]
+        # Define the canonical combined labels for classification (Primary-Secondary)
+        # "None" as a secondary label means no significant secondary category.
+        self.defined_combined_labels = sorted(
+            [
+                "Normie-None",
+                "Weeb-None",
+                "Weeb-Slight Furry",
+                "Weeb-Furry",
+                "Furry-None",
+                "Furry-Slight Weeb",
+                "Furry-Weeb",
+                "Slight Weeb-None",
+                "Slight Weeb-Slight Furry",
+                "Slight Furry-None",
+                "Slight Furry-Slight Weeb",
+            ]
         )
+        # For parsing individual primary/secondary labels if needed elsewhere
+        self.primary_labels_set = {
+            "Weeb",
+            "Furry",
+            "Slight Weeb",
+            "Slight Furry",
+            "Normie",
+        }
+        self.secondary_labels_set = {
+            "Weeb",
+            "Furry",
+            "Slight Weeb",
+            "Slight Furry",
+            "None",
+        }
 
         # Load term databases with scores
         self.weeb_terms = self._load_term_database("./output/weeb_terms.csv")
@@ -112,51 +140,144 @@ class BlueskyClassifier:
             print(f"Failed to log in to Bluesky: {e}")
             return False
 
-    def _parse_label_from_data_response(self, response_text: str) -> str:
-        """Parses the classification label from the 'response' field of prepared data."""
+    def _determine_classification_labels(
+        self, w_score: float, f_score: float
+    ) -> Tuple[str, str]:
+        """Determines primary and secondary classification labels based on scores."""
+        primary_label = "Normie"
+        secondary_label = "None"
+
+        # Rule: Normie if max score <= 0.4
+        if max(w_score, f_score) <= 0.4:
+            return "Normie", "None"
+
+        # Determine dominant and secondary scores/types
+        is_weeb_dominant = w_score >= f_score  # Default to weeb in case of exact tie
+
+        dominant_score = w_score if is_weeb_dominant else f_score
+        secondary_s = f_score if is_weeb_dominant else w_score
+
+        dominant_type_strong = "Weeb" if is_weeb_dominant else "Furry"
+        dominant_type_slight = "Slight Weeb" if is_weeb_dominant else "Slight Furry"
+
+        secondary_type_strong = "Furry" if is_weeb_dominant else "Weeb"
+        secondary_type_slight = "Slight Furry" if is_weeb_dominant else "Slight Weeb"
+
+        # Case 1: Strong primary (dominant score > 0.7)
+        if dominant_score > 0.7:
+            primary_label = dominant_type_strong
+            if secondary_s > 0.7:  # Strong secondary
+                secondary_label = secondary_type_strong
+            elif secondary_s > 0.4:  # Slight secondary
+                secondary_label = secondary_type_slight
+            else:  # No significant secondary
+                secondary_label = "None"
+        # Case 2: Slight primary (dominant score is > 0.4 and <= 0.7)
+        elif dominant_score > 0.4:
+            primary_label = dominant_type_slight
+            # Secondary can only be slight or none if primary is slight
+            if secondary_s > 0.4 and secondary_s <= 0.7:  # Slight secondary
+                secondary_label = secondary_type_slight
+            # If secondary_s > 0.7, it would have been dominant, handled by Case 1 logic inversion.
+            # This ensures primary is truly the 'slight dominant' one.
+            # If secondary_s is also slight, it's a valid slight-slight pair.
+            else:  # No significant or only very weak secondary
+                secondary_label = "None"
+        # Fallback, should be covered by the first condition (max_score <= 0.4)
+        else:
+            primary_label = "Normie"
+            secondary_label = "None"
+
+        return primary_label, secondary_label
+
+    def _parse_combined_label_from_text(
+        self, text_block: str, source_type: str = "data response"
+    ) -> str:
+        """
+        Parses primary and secondary classification labels from a text block.
+        Returns a combined label string "Primary-Secondary" or "Unknown-Unknown".
+        """
+        primary_label = "Unknown"
+        secondary_label = "Unknown"  # Default if not found or not applicable
+
         try:
-            # Example response: "Classification: Weeb\nWeeb Score: 0.80\nFurry Score: 0.10"
-            label_part = (
-                response_text.split("Classification:")[1].split("\n")[0].strip()
-            )
-            if label_part in self.defined_labels:
-                return label_part
-            else:
-                # If the parsed label is not in our defined set, map it or mark as unknown
-                print(
-                    f"Warning: Parsed label '{label_part}' from data response is not in defined labels. Treating as 'Normie' for safety."
+            if "Primary Classification:" in text_block:
+                parsed_primary = (
+                    text_block.split("Primary Classification:")[1]
+                    .split("\n")[0]
+                    .strip()
                 )
-                return "Normie"  # Default or specific handling
+                if parsed_primary in self.primary_labels_set:
+                    primary_label = parsed_primary
+                else:
+                    print(
+                        f"Warning: Parsed primary label '{parsed_primary}' from {source_type} is not in defined set. Defaulting to Normie."
+                    )
+                    primary_label = "Normie"  # Fallback for unknown primary
+
+            if "Secondary Classification:" in text_block:
+                parsed_secondary = (
+                    text_block.split("Secondary Classification:")[1]
+                    .split("\n")[0]
+                    .strip()
+                )
+                if parsed_secondary in self.secondary_labels_set:
+                    secondary_label = parsed_secondary
+                else:
+                    # If model hallucinates an invalid secondary, treat as None
+                    print(
+                        f"Warning: Parsed secondary label '{parsed_secondary}' from {source_type} is not in defined set. Defaulting to None."
+                    )
+                    secondary_label = "None"
+            elif primary_label == "Normie":  # Normies always have "None" secondary
+                secondary_label = "None"
+            elif (
+                primary_label != "Unknown"
+            ):  # If primary is known but secondary line is missing, assume None
+                secondary_label = "None"
+
+            # Ensure Normie primary always has None secondary
+            if primary_label == "Normie":
+                secondary_label = "None"
+            # Ensure Normie is not a secondary label
+            if secondary_label == "Normie":
+                print(
+                    f"Warning: 'Normie' parsed as secondary label from {source_type}. Correcting to 'None'."
+                )
+                secondary_label = "None"
+
         except IndexError:
             print(
-                f"Warning: Could not parse label from data response: '{response_text[:50]}...'"
+                f"Warning: Could not fully parse labels from {source_type}: '{text_block[:70]}...'"
             )
-            return "Unknown"  # Special category for parsing failures
+            # If parsing fails significantly, it might be better to return "Unknown-Unknown"
+            # For now, rely on defaults set above.
+            if primary_label == "Unknown":
+                secondary_label = "Unknown"  # If primary is unknown, secondary is too
 
-    def _extract_classification_from_model_output(self, generated_text: str) -> str:
-        """Extracts the classification label from the model's generated output string."""
-        try:
-            if "Classification:" in generated_text:
-                label = (
-                    generated_text.split("Classification:")[1].split("\n")[0].strip()
+        combined_label = f"{primary_label}-{secondary_label}"
+
+        # If the exact combination is not in defined_combined_labels, try to find a valid fallback.
+        # This handles cases where parsing might be slightly off or if the model generates a combo
+        # that _determine_classification_labels wouldn't (e.g. Weeb-Weeb)
+        if (
+            combined_label not in self.defined_combined_labels
+            and primary_label != "Unknown"
+        ):
+            fallback_combined = f"{primary_label}-None"
+            if fallback_combined in self.defined_combined_labels:
+                print(
+                    f"Warning: Generated combined label '{combined_label}' from {source_type} is not in defined_combined_labels. Falling back to '{fallback_combined}'."
                 )
-                if label in self.defined_labels:
-                    return label
-                else:
-                    # If model hallucinates a label not in our defined set
-                    print(
-                        f"Warning: Model predicted label '{label}' not in defined labels. Defaulting to 'Normie'."
-                    )
-                    return "Normie"
-            print(
-                f"Warning: 'Classification:' not found in model output: '{generated_text[:50]}...'"
-            )
-            return "Unknown"
-        except Exception as e:
-            print(
-                f"Error parsing model output for classification: {e}, output: '{generated_text[:50]}...'"
-            )
-            return "Unknown"
+                return fallback_combined
+            else:
+                # Ultimate fallback if even "Primary-None" is not valid (should not happen with current defined_combined_labels)
+                print(
+                    f"Critical Warning: Generated combined label '{combined_label}' and fallback '{fallback_combined}' from {source_type} are not in defined_combined_labels. Defaulting to 'Normie-None'."
+                )
+                return "Normie-None"
+
+        return combined_label if primary_label != "Unknown" else "Unknown-Unknown"
 
     def _prepare_training_data(self, bluesky_data_csv: str) -> List[Dict[str, str]]:
         """Prepare training data from Bluesky posts CSV and term databases"""
@@ -184,38 +305,35 @@ class BlueskyClassifier:
             weeb_score = self._calculate_category_score(text, self.weeb_terms)
             furry_score = self._calculate_category_score(text, self.furry_terms)
 
-            if weeb_score > 0.7 and weeb_score > furry_score:
-                label = "Weeb"
-            elif furry_score > 0.7 and furry_score > weeb_score:
-                label = "Furry"
-            elif max(weeb_score, furry_score) > 0.4:
-                if weeb_score > furry_score:
-                    label = "Slight Weeb"
-                else:
-                    label = "Slight Furry"
-            else:
-                label = "Normie"
+            primary_label, secondary_label = self._determine_classification_labels(
+                weeb_score, furry_score
+            )
 
             prompt = f"Analyze this Bluesky post for weeb and furry traits: {text}"
-            response = f"Classification: {label}\nWeeb Score: {weeb_score:.2f}\nFurry Score: {furry_score:.2f}"
+            response = (
+                f"Primary Classification: {primary_label}\n"
+                f"Secondary Classification: {secondary_label}\n"
+                f"Weeb Score: {weeb_score:.2f}\n"
+                f"Furry Score: {furry_score:.2f}"
+            )
 
-            # Ensure the label derived is one of the defined_labels for consistency
-            parsed_label_check = self._parse_label_from_data_response(response)
+            combined_heuristic_label = self._parse_combined_label_from_text(
+                response, source_type="heuristic data generation"
+            )
+
             if (
-                parsed_label_check == "Unknown" and label != "Unknown"
-            ):  # Should not happen if logic is correct
-                print(
-                    f"Warning: Mismatch in label generation. Original: {label}, Parsed: {parsed_label_check}"
-                )
-                # Fallback or skip this data point if critical
-
-            if parsed_label_check != "Unknown":  # Only add if label is valid
+                "Unknown" not in combined_heuristic_label
+            ):  # Ensure a valid combined label was parsed
                 training_data.append(
                     {
                         "prompt": prompt,
                         "response": response,
-                        "true_label_heuristic": parsed_label_check,
+                        "true_label_heuristic": combined_heuristic_label,  # This is "Primary-Secondary"
                     }
+                )
+            else:
+                print(
+                    f"Skipping data point due to unknown heuristic label for text: {text[:50]}..."
                 )
 
         print(f"Created {len(training_data)} training examples")
@@ -231,56 +349,44 @@ class BlueskyClassifier:
         # A more robust normalization might consider the sum of all term scores in the DB.
         # Let's use a simplified sum of scores of matched terms for now.
         # Normalization as per original:
-        max_potential_score = terms_df["combined_score"].sum()
+        max_potential_score = terms_df[
+            "combined_score"
+        ].sum()  # Sum of all scores in the term list
 
         for _, row in terms_df.iterrows():
             term = str(row["term"]).lower()  # Ensure term is string
             term_score = row["combined_score"]
             if term in text:
                 score += term_score
-
-        if max_potential_score > 0:
-            return score / max_potential_score
-        return 0.0
+        return score / max_potential_score if max_potential_score > 0 else 0.0
 
     def _evaluate_model_and_print_metrics(
         self, eval_data: List[Dict[str, str]], output_dir: str
     ):
-        """Evaluates the model on the evaluation data and prints metrics."""
+        """Evaluates the model on the evaluation data and prints metrics for combined labels."""
         print(f"\nEvaluating model on {len(eval_data)} samples...")
 
-        y_true = []
-        y_pred = []
+        y_true_combined = []
+        y_pred_combined = []
 
         # Ensure model and tokenizer are on the correct device
         self.model.to(self.device)
 
         for item in tqdm(eval_data, desc="Evaluating model"):
             prompt_text = item["prompt"]
-            true_label = item[
-                "true_label_heuristic"
-            ]  # This is the label from our heuristic
-
-            # Prepare prompt for inference (Unsloth/Gemma specific with ChatML)
-            # The model expects the format: <|user|>\n{prompt}\n<|assistant|>
-            # It will then generate the assistant's response.
-            # Note: Unsloth's FastLanguageModel.generate handles chat templates internally if available.
-            # For explicit control or if issues arise, manual formatting is safer.
-            # Let's use the manual formatting to be sure.
-
-            # Gemma uses specific tokens <start_of_turn> and <end_of_turn>
-            # For Unsloth fine-tuned Gemma, it often maps to a common chat template like ChatML.
-            # The SFTTrainer formatting_func uses <|user|> and <|assistant|>. We should match this for inference.
+            # true_label_heuristic is already a combined "Primary-Secondary" string
+            true_combined_label = item["true_label_heuristic"]
 
             formatted_prompt_for_inference = f"<|user|>\n{prompt_text}\n<|assistant|>"
+            # Ensure max_length accounts for prompt and potential response length
             inputs = self.tokenizer(
                 formatted_prompt_for_inference,
                 return_tensors="pt",
                 truncation=True,
-                max_length=self.tokenizer.model_max_length - 50,
+                max_length=self.tokenizer.model_max_length - 70,
             ).to(
                 self.device
-            )  # max_length to prevent overflow, -50 for generated response
+            )  # max_length to prevent overflow, -70 for generated response
 
             with torch.no_grad():
                 # Generate response. max_new_tokens should be enough for the classification output.
@@ -288,7 +394,7 @@ class BlueskyClassifier:
                 outputs = self.model.generate(
                     input_ids=inputs.input_ids,
                     attention_mask=inputs.attention_mask,  # Pass attention_mask
-                    max_new_tokens=60,  # Increased slightly for safety
+                    max_new_tokens=70,  # Increased slightly for safety
                     pad_token_id=self.tokenizer.pad_token_id,  # Use the tokenizer's pad token id
                     eos_token_id=self.tokenizer.eos_token_id,  # Explicitly set EOS
                     do_sample=False,  # For deterministic output for eval
@@ -303,35 +409,46 @@ class BlueskyClassifier:
                 generated_tokens, skip_special_tokens=True
             ).strip()
 
-            predicted_label = self._extract_classification_from_model_output(
-                model_response_part
+            predicted_combined_label = self._parse_combined_label_from_text(
+                model_response_part, source_type="model output"
             )
 
-            y_true.append(true_label)
-            y_pred.append(predicted_label)
+            y_true_combined.append(true_combined_label)
+            y_pred_combined.append(predicted_combined_label)
 
-        print("\n--- Classification Metrics ---")
-        # Use self.defined_labels for consistency in the report, add "Unknown" if it appeared in y_pred
-        report_labels = self.defined_labels + (
-            ["Unknown"] if "Unknown" in y_pred else []
-        )
-        report_labels = sorted(list(set(report_labels)))  # Unique sorted labels
+        print("\n--- Classification Metrics (Combined Labels) ---")
 
-        # Filter y_true and y_pred to only include labels present in report_labels for sklearn
-        # This is important if 'Unknown' was a true label due to parsing error during data prep,
-        # but we decided not to include it in self.defined_labels for the report.
-        # For now, we assume true_labels are from self.defined_labels due to _parse_label_from_data_response logic.
+        current_labels_in_data = sorted(list(set(y_true_combined + y_pred_combined)))
+
+        # Filter self.defined_combined_labels to only those present in the actual data for the report
+        # and ensure "Unknown-Unknown" is included if it appeared.
+        report_labels = [
+            label
+            for label in self.defined_combined_labels
+            if label in current_labels_in_data
+        ]
+        if (
+            "Unknown-Unknown" in current_labels_in_data
+            and "Unknown-Unknown" not in report_labels
+        ):
+            report_labels.append("Unknown-Unknown")
+        report_labels = sorted(list(set(report_labels)))  # Ensure uniqueness and order
 
         print(
-            classification_report(y_true, y_pred, labels=report_labels, zero_division=0)
+            classification_report(
+                y_true_combined, y_pred_combined, labels=report_labels, zero_division=0
+            )
         )
-
-        print("\n--- Confusion Matrix ---")
-        cm = confusion_matrix(y_true, y_pred, labels=report_labels)
+        print("\n--- Confusion Matrix (Combined Labels) ---")
+        cm = confusion_matrix(y_true_combined, y_pred_combined, labels=report_labels)
         print(cm)
 
-        # Plot confusion matrix
-        plt.figure(figsize=(10, 8))
+        plt.figure(
+            figsize=(
+                max(12, len(report_labels) * 0.8),
+                max(10, len(report_labels) * 0.6),
+            )
+        )  # Dynamic sizing
         sns.heatmap(
             cm,
             annot=True,
@@ -340,11 +457,14 @@ class BlueskyClassifier:
             xticklabels=report_labels,
             yticklabels=report_labels,
         )
-        plt.xlabel("Predicted Label")
-        plt.ylabel("True Label")
-        plt.title("Confusion Matrix")
+        plt.xlabel("Predicted Label (Primary-Secondary)")
+        plt.ylabel("True Label (Primary-Secondary)")
+        plt.title("Confusion Matrix (Combined Labels)")
+        plt.xticks(rotation=45, ha="right")
+        plt.yticks(rotation=0)
+        plt.tight_layout()  # Adjust layout to prevent labels from overlapping
 
-        cm_path = os.path.join(output_dir, "confusion_matrix.png")
+        cm_path = os.path.join(output_dir, "confusion_matrix_combined.png")
         try:
             plt.savefig(cm_path)
             print(f"Confusion matrix saved to {cm_path}")
@@ -358,49 +478,39 @@ class BlueskyClassifier:
         output_dir: str = "finetuned_model",
         epochs: int = 3,
         learning_rate: float = 2e-4,
-        eval_split_size: float = 0.20,  # Proportion of data for evaluation
+        eval_split_size: float = 0.20,
     ):
-        """Fine-tune the model using the prepared data and evaluate it."""
         if self.model is None or self.tokenizer is None:
             self.setup_model()
-
-        # Prepare all data
         all_prepared_data = self._prepare_training_data(bluesky_data_csv)
         if not all_prepared_data:
             print("No training data prepared. Skipping fine-tuning and evaluation.")
             return None
 
-        # Extract prompts, responses, and true labels for splitting
-        # The 'true_label_heuristic' is what we'll use as ground truth for evaluation
-
-        # Stratification needs labels. We use 'true_label_heuristic'.
         labels_for_stratification = [
             item["true_label_heuristic"] for item in all_prepared_data
         ]
+        train_data_dicts, eval_data_dicts = [], []
 
-        # Split data into training and evaluation sets
-        if (
-            eval_split_size > 0 and len(all_prepared_data) > 1
-        ):  # Need at least 2 samples to split
-            # Check if stratification is possible
-            if (
-                len(set(labels_for_stratification)) < 2
-                and len(all_prepared_data) * (1 - eval_split_size) >= 1
+        if eval_split_size > 0 and len(all_prepared_data) > 1:
+            # Check for stratification feasibility for sklearn's train_test_split
+            # It requires at least 2 samples for each class present in `labels_for_stratification`
+            # if stratify parameter is used.
+            min_samples_per_class_for_split = 2
+            counts = pd.Series(labels_for_stratification).value_counts()
+            # Stratification is possible if all unique labels have at least min_samples_per_class_for_split
+            # and there's more than one unique label.
+            stratify_possible_sklearn = (
+                all(counts >= min_samples_per_class_for_split) and len(counts) > 1
+            )
+
+            # Ensure enough samples for both train and eval sets after splitting
+            enough_total_samples_for_split = (
+                len(all_prepared_data) * (1 - eval_split_size) >= 1
                 and len(all_prepared_data) * eval_split_size >= 1
-            ):
-                print(
-                    "Warning: Only one class present in data or not enough samples for stratification. Splitting without stratification."
-                )
-                train_data_dicts, eval_data_dicts = train_test_split(
-                    all_prepared_data,
-                    test_size=eval_split_size,
-                    random_state=RANDOM_SEED,
-                )
-            elif (
-                len(set(labels_for_stratification)) >= 2
-                and len(all_prepared_data) * (1 - eval_split_size) >= 1
-                and len(all_prepared_data) * eval_split_size >= 1
-            ):
+            )
+
+            if stratify_possible_sklearn and enough_total_samples_for_split:
                 train_data_dicts, eval_data_dicts = train_test_split(
                     all_prepared_data,
                     test_size=eval_split_size,
@@ -408,11 +518,27 @@ class BlueskyClassifier:
                     stratify=labels_for_stratification,
                 )
             else:  # Not enough samples for a split
-                print(
-                    "Warning: Not enough samples for a train/eval split. Using all data for training and skipping evaluation."
-                )
-                train_data_dicts = all_prepared_data
-                eval_data_dicts = []
+                if not stratify_possible_sklearn:
+                    print(
+                        "Warning: Stratification not possible due to insufficient samples in some classes or only one class. Splitting without stratification."
+                    )
+                elif not enough_total_samples_for_split:
+                    print(
+                        "Warning: Not enough total samples to create both training and evaluation sets with the current split size. Splitting without stratification or adjusting."
+                    )
+                # Fallback to non-stratified split if conditions aren't met but splitting is desired
+                if enough_total_samples_for_split:
+                    train_data_dicts, eval_data_dicts = train_test_split(
+                        all_prepared_data,
+                        test_size=eval_split_size,
+                        random_state=RANDOM_SEED,
+                    )
+                else:  # Not enough for a split at all, use all for training
+                    print(
+                        "Warning: Not enough samples for a train/eval split. Using all data for training and skipping evaluation."
+                    )
+                    train_data_dicts = all_prepared_data
+                    eval_data_dicts = []
         else:
             print(
                 "Evaluation split size is 0 or not enough data. Using all data for training and skipping evaluation."
@@ -436,9 +562,8 @@ class BlueskyClassifier:
         eos_token = self.tokenizer.eos_token
 
         def formatting_func(example):
-            prompt_text = str(example.get("prompt", ""))  # Robust access
-            response_text = str(example.get("response", ""))  # Robust access
-            # Standard ChatML format that Unsloth often uses for Gemma fine-tuning
+            prompt_text = str(example.get("prompt", ""))
+            response_text = str(example.get("response", ""))
             return f"<|user|>\n{prompt_text}\n<|assistant|>\n{response_text}{eos_token}"
 
         training_args = TrainingArguments(
@@ -457,8 +582,7 @@ class BlueskyClassifier:
             report_to="none",  # "tensorboard" or "wandb" if desired
             optim="adamw_torch",
             fp16=torch.cuda.is_available(),
-            bf16=torch.cuda.is_available()
-            and torch.cuda.is_bf16_supported(),  # Use BF16 if available
+            bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         )
 
         trainer = SFTTrainer(
@@ -534,13 +658,13 @@ class BlueskyClassifier:
             raise ValueError("Not logged in to Bluesky. Call login_bluesky first.")
 
         try:
-            user_info = await self.client.get_profile(actor=user_handle)  # Use await
+            user_info = await self.client.get_profile(actor=user_handle)
             user_did = user_info.did
 
             posts = []
             cursor = None
             while len(posts) < limit:
-                response = await self.client.get_author_feed(  # Use await
+                response = await self.client.get_author_feed(
                     actor=user_did, limit=min(100, limit - len(posts)), cursor=cursor
                 )
                 if not response.feed:
@@ -563,7 +687,8 @@ class BlueskyClassifier:
         """Classify a user based on their posts using the fine-tuned model and heuristics."""
         if not posts:
             return {
-                "classification": "Unknown",
+                "primary_classification": "Unknown",
+                "secondary_classification": "Unknown",
                 "weeb_score": 0,
                 "furry_score": 0,
                 "normie_score": 1,
@@ -586,12 +711,13 @@ class BlueskyClassifier:
             combined_text, self.furry_terms
         )
 
-        # Model-based classification (more nuanced, post by post)
-        model_predicted_labels = []
+        # Heuristic overall classification (used as fallback or reference)
+        h_primary, h_secondary = self._determine_classification_labels(
+            heuristic_weeb_score, heuristic_furry_score
+        )
 
-        # Use a subset of posts for model inference to manage time/resources
-        # Max 10 posts, or fewer if total posts are less.
-        posts_for_model = posts[: min(10, len(posts))]
+        model_predicted_combined_labels = []
+        posts_for_model = posts[: min(10, len(posts))]  # Use a subset
 
         for post_text in tqdm(
             posts_for_model, desc="Classifying posts with model", leave=False
@@ -600,20 +726,20 @@ class BlueskyClassifier:
                 continue
 
             prompt = f"Analyze this Bluesky post for weeb and furry traits: {post_text}"
-            formatted_prompt_for_inference = f"<|user|>\n{prompt}\n<|assistant|>"
+            formatted_prompt = f"<|user|>\n{prompt}\n<|assistant|>"
 
             inputs = self.tokenizer(
-                formatted_prompt_for_inference,
+                formatted_prompt,
                 return_tensors="pt",
                 truncation=True,
-                max_length=self.tokenizer.model_max_length - 50,
+                max_length=self.tokenizer.model_max_length - 70,
             ).to(self.device)
 
             with torch.no_grad():
                 outputs = self.model.generate(
                     input_ids=inputs.input_ids,
                     attention_mask=inputs.attention_mask,
-                    max_new_tokens=60,
+                    max_new_tokens=70,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                     do_sample=False,
@@ -626,49 +752,44 @@ class BlueskyClassifier:
                 generated_tokens, skip_special_tokens=True
             ).strip()
 
-            predicted_label = self._extract_classification_from_model_output(
-                model_response_part
+            predicted_combined = self._parse_combined_label_from_text(
+                model_response_part, source_type="model output for user classification"
             )
-            if predicted_label != "Unknown":  # Only consider valid model predictions
-                model_predicted_labels.append(predicted_label)
-
-        # Aggregate model predictions (e.g., most common label)
-        if model_predicted_labels:
-            final_classification = max(
-                set(model_predicted_labels), key=model_predicted_labels.count
-            )
-        else:  # Fallback to heuristic if model yields no clear predictions
             if (
-                heuristic_weeb_score > 0.6
-                and heuristic_weeb_score > heuristic_furry_score
-            ):
-                final_classification = "Weeb"
-            elif (
-                heuristic_furry_score > 0.6
-                and heuristic_furry_score > heuristic_weeb_score
-            ):
-                final_classification = "Furry"
-            elif max(heuristic_weeb_score, heuristic_furry_score) > 0.3:
-                final_classification = (
-                    "Slight Weeb"
-                    if heuristic_weeb_score > heuristic_furry_score
-                    else "Slight Furry"
+                "Unknown" not in predicted_combined
+            ):  # Only consider valid model predictions
+                model_predicted_combined_labels.append(predicted_combined)
+
+        final_primary_classification = h_primary
+        final_secondary_classification = h_secondary
+
+        if model_predicted_combined_labels:
+            # Aggregate model predictions (most common combined label)
+            most_common_combined = max(
+                set(model_predicted_combined_labels),
+                key=model_predicted_combined_labels.count,
+            )
+            # Parse the aggregated primary and secondary from the combined string
+            if "-" in most_common_combined:
+                final_primary_classification, final_secondary_classification = (
+                    most_common_combined.split("-", 1)
                 )
             else:
-                final_classification = "Normie"
+                # Should not happen if _parse_combined_label_from_text works correctly and returns "X-Y"
+                final_primary_classification = most_common_combined
+                final_secondary_classification = "None"  # Fallback if parsing fails
 
-        # The scores returned can be the heuristic ones, or you could try to get scores from model too
-        # For simplicity, returning heuristic scores for weeb/furry/normie breakdown.
-        # Normie score calculation
-        combined_max_score = max(heuristic_weeb_score, heuristic_furry_score)
-        normie_score_val = max(0, 1.0 - combined_max_score)
+        normie_score_val = max(
+            0, 1.0 - max(heuristic_weeb_score, heuristic_furry_score)
+        )
 
         return {
-            "classification": final_classification,
+            "primary_classification": final_primary_classification,
+            "secondary_classification": final_secondary_classification,
             "weeb_score": round(heuristic_weeb_score, 3),
             "furry_score": round(heuristic_furry_score, 3),
             "normie_score": round(normie_score_val, 3),
-            "model_labels_debug": model_predicted_labels,  # For debugging
+            "model_combined_labels_debug": model_predicted_combined_labels,
         }
 
 
@@ -690,7 +811,9 @@ class BlueskyUserDataset:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Bluesky User Classifier with Metrics")
+    parser = argparse.ArgumentParser(
+        description="Bluesky User Classifier with Dual Labels & Metrics"
+    )
     subparsers = parser.add_subparsers(
         dest="command", help="Command to run", required=True
     )
@@ -714,14 +837,14 @@ def main():
         "--epochs", type=int, default=3, help="Training epochs"
     )
     finetune_parser.add_argument(
-        "--batch_size", type=int, default=4, help="Batch size (try smaller if OOM)"
-    )  # Reduced default
+        "--batch_size", type=int, default=4, help="Batch size (default: 4)"
+    )
     finetune_parser.add_argument(
         "--learning_rate",
         type=float,
         default=2e-5,
-        help="Learning rate (try smaller for LLMs)",
-    )  # Reduced default
+        help="Learning rate (default: 2e-5)",
+    )
     finetune_parser.add_argument(
         "--eval_split",
         type=float,
@@ -749,13 +872,13 @@ def main():
         BlueskyUserDataset.preprocess_and_save(args.input, args.output)
 
     elif args.command == "finetune":
+        # Pass batch_size from args to the classifier instance
         classifier = BlueskyClassifier(batch_size=args.batch_size)
-        # No need to call setup_model here, finetune_model will do it.
         classifier.finetune_model(
             bluesky_data_csv=args.data,
             output_dir=args.output_dir,
             epochs=args.epochs,
-            learning_rate=args.learning_rate,
+            learning_rate=args.learning_rate,  # Pass learning_rate from args
             eval_split_size=args.eval_split,
         )
 
@@ -768,12 +891,12 @@ def main():
 
             success = await classifier.login_bluesky(
                 args.bluesky_user, args.bluesky_pass
-            )  # Use await
+            )
             if not success:
                 print("Failed to login to Bluesky")
                 return
 
-            posts = await classifier.fetch_user_posts(args.username)  # Use await
+            posts = await classifier.fetch_user_posts(args.username)
             if not posts:
                 print(
                     f"No posts found or error fetching posts for user {args.username}"
@@ -785,13 +908,14 @@ def main():
             print("\n" + "=" * 50)
             print(f"Classification Results for @{args.username}")
             print("=" * 50)
-            print(f"Overall Classification: {result['classification']}")
+            print(f"Primary Classification: {result['primary_classification']}")
+            print(f"Secondary Classification: {result['secondary_classification']}")
             print(f"  Heuristic Weeb Score: {result['weeb_score']:.3f}")
             print(f"  Heuristic Furry Score: {result['furry_score']:.3f}")
             print(f"  Heuristic Normie Score: {result['normie_score']:.3f}")
-            if "model_labels_debug" in result:
+            if "model_combined_labels_debug" in result:
                 print(
-                    f"  Model Post Classifications (sample): {result['model_labels_debug']}"
+                    f"  Model Post Classifications (sample): {result['model_combined_labels_debug']}"
                 )
             print("=" * 50 + "\n")
 
