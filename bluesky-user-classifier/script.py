@@ -7,6 +7,7 @@ import numpy as np
 from typing import List, Dict, Any, Tuple
 from tqdm import tqdm
 import torch
+from multiprocessing import Pool
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -28,6 +29,92 @@ np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(RANDOM_SEED)
+
+
+def process_post_for_training(args) -> Dict[str, Any]:
+    """Process a single post for training data generation."""
+    text, weeb_terms, furry_terms = args
+
+    if not text.strip():  # Skip empty posts
+        return None
+
+    # Helper functions that were previously methods of BlueskyClassifier
+    def calculate_category_score(text: str, terms_df: pd.DataFrame) -> float:
+        if terms_df.empty:
+            return 0.0
+        text = text.lower()
+        matched_terms = terms_df[terms_df["term"].str.lower().apply(lambda x: x in text)]
+        score = matched_terms["combined_score"].sum()
+        max_potential_score = terms_df["combined_score"].sum()
+        return score / max_potential_score if max_potential_score > 0 else 0.0
+
+    def determine_classification_labels(w_score: float, f_score: float) -> Tuple[str, str]:
+        primary_label = "Normie"
+        secondary_label = "None"
+
+        # Rule: Normie if max score <= 0.4
+        if max(w_score, f_score) <= 0.4:
+            return "Normie", "None"
+
+        # Determine dominant and secondary scores/types
+        is_weeb_dominant = w_score >= f_score  # Default to weeb in case of exact tie
+
+        dominant_score = w_score if is_weeb_dominant else f_score
+        secondary_s = f_score if is_weeb_dominant else w_score
+
+        dominant_type_strong = "Weeb" if is_weeb_dominant else "Furry"
+        dominant_type_slight = "Slight Weeb" if is_weeb_dominant else "Slight Furry"
+
+        secondary_type_strong = "Furry" if is_weeb_dominant else "Weeb"
+        secondary_type_slight = "Slight Furry" if is_weeb_dominant else "Slight Weeb"
+
+        # Case 1: Strong primary (dominant score > 0.7)
+        if dominant_score > 0.7:
+            primary_label = dominant_type_strong
+            if secondary_s > 0.7:  # Strong secondary
+                secondary_label = secondary_type_strong
+            elif secondary_s > 0.4:  # Slight secondary
+                secondary_label = secondary_type_slight
+            else:  # No significant secondary
+                secondary_label = "None"
+        # Case 2: Slight primary (dominant score is > 0.4 and <= 0.7)
+        elif dominant_score > 0.4:
+            primary_label = dominant_type_slight
+            # Secondary can only be slight or none if primary is slight
+            if secondary_s > 0.4 and secondary_s <= 0.7:  # Slight secondary
+                secondary_label = secondary_type_slight
+            # If secondary_s > 0.7, it would have been dominant, handled by Case 1 logic inversion.
+            # This ensures primary is truly the 'slight dominant' one.
+            # If secondary_s is also slight, it's a valid slight-slight pair.
+            else:  # No significant or only very weak secondary
+                secondary_label = "None"
+        # Fallback, should be covered by the first condition (max_score <= 0.4)
+        else:
+            primary_label = "Normie"
+            secondary_label = "None"
+
+        return primary_label, secondary_label
+
+    weeb_score = calculate_category_score(text, weeb_terms)
+    furry_score = calculate_category_score(text, furry_terms)
+
+    primary_label, secondary_label = determine_classification_labels(
+        weeb_score, furry_score
+    )
+
+    prompt = f"Analyze this Bluesky post for weeb and furry traits: {text}"
+    response = (
+        f"Primary Classification: {primary_label}\n"
+        f"Secondary Classification: {secondary_label}\n"
+        f"Weeb Score: {weeb_score:.2f}\n"
+        f"Furry Score: {furry_score:.2f}"
+    )
+
+    return {
+        "prompt": prompt,
+        "response": response,
+        "true_label_heuristic": f"{primary_label}-{secondary_label}",
+    }
 
 
 class BlueskyClassifier:
@@ -76,8 +163,12 @@ class BlueskyClassifier:
         }
 
         # Load term databases with scores
-        self.weeb_terms = self._load_term_database("./output/weeb_terms.csv")
-        self.furry_terms = self._load_term_database("./output/furry_terms.csv")
+        self.weeb_terms = self._load_term_database(
+            "output/terms-analysis/weeb_terms.csv"
+        )
+        self.furry_terms = self._load_term_database(
+            "output/terms-analysis/furry_terms.csv"
+        )
 
         # ATProto client for Bluesky
         self.client = None
@@ -85,8 +176,8 @@ class BlueskyClassifier:
     def _load_term_database(self, csv_file: str) -> pd.DataFrame:
         """Load and process a terms CSV file"""
         if not os.path.exists(csv_file):
-            print(f"Warning: {csv_file} not found. Using empty dataframe.")
-            return pd.DataFrame(columns=["term", "combined_score"])
+            print(f"Error: {csv_file} not found. Exiting")
+            exit()
 
         df = pd.read_csv(csv_file)
         df = df[["term", "combined_score"]].sort_values(
@@ -140,147 +231,8 @@ class BlueskyClassifier:
             print(f"Failed to log in to Bluesky: {e}")
             return False
 
-    def _determine_classification_labels(
-        self, w_score: float, f_score: float
-    ) -> Tuple[str, str]:
-        """Determines primary and secondary classification labels based on scores."""
-        primary_label = "Normie"
-        secondary_label = "None"
-
-        # Rule: Normie if max score <= 0.4
-        if max(w_score, f_score) <= 0.4:
-            return "Normie", "None"
-
-        # Determine dominant and secondary scores/types
-        is_weeb_dominant = w_score >= f_score  # Default to weeb in case of exact tie
-
-        dominant_score = w_score if is_weeb_dominant else f_score
-        secondary_s = f_score if is_weeb_dominant else w_score
-
-        dominant_type_strong = "Weeb" if is_weeb_dominant else "Furry"
-        dominant_type_slight = "Slight Weeb" if is_weeb_dominant else "Slight Furry"
-
-        secondary_type_strong = "Furry" if is_weeb_dominant else "Weeb"
-        secondary_type_slight = "Slight Furry" if is_weeb_dominant else "Slight Weeb"
-
-        # Case 1: Strong primary (dominant score > 0.7)
-        if dominant_score > 0.7:
-            primary_label = dominant_type_strong
-            if secondary_s > 0.7:  # Strong secondary
-                secondary_label = secondary_type_strong
-            elif secondary_s > 0.4:  # Slight secondary
-                secondary_label = secondary_type_slight
-            else:  # No significant secondary
-                secondary_label = "None"
-        # Case 2: Slight primary (dominant score is > 0.4 and <= 0.7)
-        elif dominant_score > 0.4:
-            primary_label = dominant_type_slight
-            # Secondary can only be slight or none if primary is slight
-            if secondary_s > 0.4 and secondary_s <= 0.7:  # Slight secondary
-                secondary_label = secondary_type_slight
-            # If secondary_s > 0.7, it would have been dominant, handled by Case 1 logic inversion.
-            # This ensures primary is truly the 'slight dominant' one.
-            # If secondary_s is also slight, it's a valid slight-slight pair.
-            else:  # No significant or only very weak secondary
-                secondary_label = "None"
-        # Fallback, should be covered by the first condition (max_score <= 0.4)
-        else:
-            primary_label = "Normie"
-            secondary_label = "None"
-
-        return primary_label, secondary_label
-
-    def _parse_combined_label_from_text(
-        self, text_block: str, source_type: str = "data response"
-    ) -> str:
-        """
-        Parses primary and secondary classification labels from a text block.
-        Returns a combined label string "Primary-Secondary" or "Unknown-Unknown".
-        """
-        primary_label = "Unknown"
-        secondary_label = "Unknown"  # Default if not found or not applicable
-
-        try:
-            if "Primary Classification:" in text_block:
-                parsed_primary = (
-                    text_block.split("Primary Classification:")[1]
-                    .split("\n")[0]
-                    .strip()
-                )
-                if parsed_primary in self.primary_labels_set:
-                    primary_label = parsed_primary
-                else:
-                    print(
-                        f"Warning: Parsed primary label '{parsed_primary}' from {source_type} is not in defined set. Defaulting to Normie."
-                    )
-                    primary_label = "Normie"  # Fallback for unknown primary
-
-            if "Secondary Classification:" in text_block:
-                parsed_secondary = (
-                    text_block.split("Secondary Classification:")[1]
-                    .split("\n")[0]
-                    .strip()
-                )
-                if parsed_secondary in self.secondary_labels_set:
-                    secondary_label = parsed_secondary
-                else:
-                    # If model hallucinates an invalid secondary, treat as None
-                    print(
-                        f"Warning: Parsed secondary label '{parsed_secondary}' from {source_type} is not in defined set. Defaulting to None."
-                    )
-                    secondary_label = "None"
-            elif primary_label == "Normie":  # Normies always have "None" secondary
-                secondary_label = "None"
-            elif (
-                primary_label != "Unknown"
-            ):  # If primary is known but secondary line is missing, assume None
-                secondary_label = "None"
-
-            # Ensure Normie primary always has None secondary
-            if primary_label == "Normie":
-                secondary_label = "None"
-            # Ensure Normie is not a secondary label
-            if secondary_label == "Normie":
-                print(
-                    f"Warning: 'Normie' parsed as secondary label from {source_type}. Correcting to 'None'."
-                )
-                secondary_label = "None"
-
-        except IndexError:
-            print(
-                f"Warning: Could not fully parse labels from {source_type}: '{text_block[:70]}...'"
-            )
-            # If parsing fails significantly, it might be better to return "Unknown-Unknown"
-            # For now, rely on defaults set above.
-            if primary_label == "Unknown":
-                secondary_label = "Unknown"  # If primary is unknown, secondary is too
-
-        combined_label = f"{primary_label}-{secondary_label}"
-
-        # If the exact combination is not in defined_combined_labels, try to find a valid fallback.
-        # This handles cases where parsing might be slightly off or if the model generates a combo
-        # that _determine_classification_labels wouldn't (e.g. Weeb-Weeb)
-        if (
-            combined_label not in self.defined_combined_labels
-            and primary_label != "Unknown"
-        ):
-            fallback_combined = f"{primary_label}-None"
-            if fallback_combined in self.defined_combined_labels:
-                print(
-                    f"Warning: Generated combined label '{combined_label}' from {source_type} is not in defined_combined_labels. Falling back to '{fallback_combined}'."
-                )
-                return fallback_combined
-            else:
-                # Ultimate fallback if even "Primary-None" is not valid (should not happen with current defined_combined_labels)
-                print(
-                    f"Critical Warning: Generated combined label '{combined_label}' and fallback '{fallback_combined}' from {source_type} are not in defined_combined_labels. Defaulting to 'Normie-None'."
-                )
-                return "Normie-None"
-
-        return combined_label if primary_label != "Unknown" else "Unknown-Unknown"
-
     def _prepare_training_data(self, bluesky_data_csv: str) -> List[Dict[str, str]]:
-        """Prepare training data from Bluesky posts CSV and term databases"""
+        """Prepare training data from Bluesky posts CSV and term databases using multiprocessing"""
         print(f"Loading Bluesky data from {bluesky_data_csv}...")
 
         if not os.path.exists(bluesky_data_csv):
@@ -291,74 +243,27 @@ class BlueskyClassifier:
         posts_df = posts_df.dropna(subset=["text"])
         posts_df["text"] = posts_df["text"].astype(str)  # Ensure text is string
 
-        training_data = []
+        # Prepare arguments for multiprocessing
+        process_args = [
+            (text, self.weeb_terms, self.furry_terms)
+            for text in posts_df["text"]
+        ]
 
-        for _, row in tqdm(
-            posts_df.iterrows(),
-            total=len(posts_df),
-            desc="Analyzing posts for training data",
-        ):
-            text = row["text"].lower()
-            if not text.strip():  # Skip empty posts
-                continue
-
-            weeb_score = self._calculate_category_score(text, self.weeb_terms)
-            furry_score = self._calculate_category_score(text, self.furry_terms)
-
-            primary_label, secondary_label = self._determine_classification_labels(
-                weeb_score, furry_score
-            )
-
-            prompt = f"Analyze this Bluesky post for weeb and furry traits: {text}"
-            response = (
-                f"Primary Classification: {primary_label}\n"
-                f"Secondary Classification: {secondary_label}\n"
-                f"Weeb Score: {weeb_score:.2f}\n"
-                f"Furry Score: {furry_score:.2f}"
-            )
-
-            combined_heuristic_label = self._parse_combined_label_from_text(
-                response, source_type="heuristic data generation"
-            )
-
-            if (
-                "Unknown" not in combined_heuristic_label
-            ):  # Ensure a valid combined label was parsed
-                training_data.append(
-                    {
-                        "prompt": prompt,
-                        "response": response,
-                        "true_label_heuristic": combined_heuristic_label,  # This is "Primary-Secondary"
-                    }
+        # Process posts in parallel
+        with Pool(processes=4) as pool:
+            results = list(
+                tqdm(
+                    pool.imap(process_post_for_training, process_args),
+                    total=len(process_args),
+                    desc="Analyzing posts for training data",
+                    mininterval=10.0,
                 )
-            else:
-                print(
-                    f"Skipping data point due to unknown heuristic label for text: {text[:50]}..."
-                )
+            )
 
+        # Filter out None results
+        training_data = [r for r in results if r is not None]
         print(f"Created {len(training_data)} training examples")
         return training_data
-
-    def _calculate_category_score(self, text: str, terms_df: pd.DataFrame) -> float:
-        """Calculate category score for a given text using terms database"""
-        if terms_df.empty:
-            return 0.0
-        score = 0.0
-        # Max potential score calculation can be complex if terms overlap or have different weights.
-        # For simplicity, this version sums scores of present terms.
-        # A more robust normalization might consider the sum of all term scores in the DB.
-        # Let's use a simplified sum of scores of matched terms for now.
-        # Normalization as per original:
-        max_potential_score = terms_df[
-            "combined_score"
-        ].sum()  # Sum of all scores in the term list
-
-        for _, row in terms_df.iterrows():
-            term = str(row["term"]).lower()  # Ensure term is string
-            term_score = row["combined_score"]
-            if term in text:
-                score += term_score
-        return score / max_potential_score if max_potential_score > 0 else 0.0
 
     def _evaluate_model_and_print_metrics(
         self, eval_data: List[Dict[str, str]], output_dir: str
@@ -372,7 +277,7 @@ class BlueskyClassifier:
         # Ensure model and tokenizer are on the correct device
         self.model.to(self.device)
 
-        for item in tqdm(eval_data, desc="Evaluating model"):
+        for item in tqdm(eval_data, desc="Evaluating model", mininterval=10.0):
             prompt_text = item["prompt"]
             # true_label_heuristic is already a combined "Primary-Secondary" string
             true_combined_label = item["true_label_heuristic"]
@@ -738,7 +643,10 @@ class BlueskyClassifier:
         posts_for_model = posts[: min(10, len(posts))]  # Use a subset
 
         for post_text in tqdm(
-            posts_for_model, desc="Classifying posts with model", leave=False
+            posts_for_model,
+            desc="Classifying posts with model",
+            leave=False,
+            mininterval=10.0,
         ):
             if not post_text.strip():
                 continue
