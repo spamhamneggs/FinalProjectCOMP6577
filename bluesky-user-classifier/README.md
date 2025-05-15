@@ -1,99 +1,96 @@
 # Bluesky User Classifier
 
-This tool classifies Bluesky users as Weeb, Furry, or Normie based on their post history. It uses a fine-tuned language model to analyze post content and identify patterns associated with different user types.
+This tool classifies Bluesky users as Weeb, Furry, Slight Weeb, Slight Furry, or Normie based on their post history. It uses a fine-tuned language model (Gemma 3 1B-IT) to analyze post content and identify patterns associated with different user types. It also provides evaluation metrics after fine-tuning.
 
 ## Features
 
-- Fine-tunes the Gemma 3 1B-IT model with 4-bit quantization for efficient classification
-- Uses a scoring system based on weighted term databases
-- Fetches user posts directly from Bluesky using the ATProto API
-- Provides classification with confidence scores for each category
-
-## Installation
-
-1. Clone the repository:
-
-```bash
-git clone https://github.com/yourusername/bluesky-classifier
-cd bluesky-classifier
-```
-
-2. Install dependencies:
-
-```bash
-pip install torch unsloth transformers trl pandas numpy tqdm atproto
-```
-
-3. Place the term databases in the root directory:
-   - `weeb_terms.csv`
-   - `furry_terms.csv`
+- Fine-tunes a language model (`unsloth/gemma-3-1b-it-unsloth-bnb-4bit`) with 4-bit quantization for efficient classification.  
+- Uses a heuristic scoring system based on weighted term databases for initial data labeling and fallback classification.  
+- Fetches user posts directly from Bluesky using the ATProto API.  
+- Provides classification with heuristic scores for each category (Weeb, Furry, Normie).  
+- **Generates classification metrics (classification report and confusion matrix) after fine-tuning.**
 
 ## Usage
 
-The tool provides three main commands:
+The tool provides three main commands. Replace `script.py` with the actual name of your Python script.
 
 ### 1. Preprocess Bluesky Data
 
-Before training, you need to preprocess the Bluesky data:
+Before training, you need to preprocess your Bluesky data (if you have it in a CSV format from another source):
 
-```bash
-python BlueskyUserClassifier.py preprocess --input bluesky_data.csv --output processed_data.csv
+```bash  
+python script.py preprocess --input raw_bluesky_data.csv --output processed_data.csv
 ```
 
-### 2. Fine-tune the Model
+- --input: Path to the raw CSV file containing Bluesky posts.  
+- --output: Path where the processed CSV file will be saved.
+
+### **2. Fine-tune the Model**
 
 Train the model using the preprocessed data:
 
 ```bash
-python BlueskyUserClassifier.py finetune --data processed_data.csv --output_dir finetuned_model --epochs 3
+python script.py finetune --data processed_data.csv --output_dir finetuned_model --epochs 3
 ```
 
 Additional options:
 
-- `--batch_size`: Training batch size (default: 8)
-- `--learning_rate`: Learning rate (default: 2e-4)
+- --output_dir: Directory to save the fine-tuned model and evaluation results (default: finetuned_model).  
+- --epochs: Number of training epochs (default: 3).  
+- --batch_size: Training batch size (default: 4).  
+- --learning_rate: Learning rate (default: 2e-5).  
+- --eval_split: Proportion of data to use for evaluation (default: 0.2). Set to 0 to disable evaluation and train on all data.
 
-### 3. Classify a User
+After fine-tuning, a classification report will be printed to the console, and a confusion matrix plot (confusion_matrix.png) will be saved in the specified --output_dir.
 
-Once the model is trained, you can classify any Bluesky user:
+### **3. Classify a User**
 
-```bash
-python BlueskyUserClassifier.py classify --model finetuned_model --username target_user.bsky.social --bluesky_user your_username.bsky.social --bluesky_pass your_password
+Once the model is trained (or if you're using a pre-trained model specified in the script), you can classify any Bluesky user:
+
+``` bash
+python script.py classify --model finetuned_model --username target_user.bsky.social --bluesky_user your_login_username.bsky.social --bluesky_pass your_login_password
 ```
 
-## How It Works
+- --model: Path to the directory containing the fine-tuned model adapters (e.g., finetuned_model).  
+- --username: The Bluesky handle of the user you want to classify.  
+- --bluesky_user: Your Bluesky username for logging in.  
+- --bluesky_pass: Your Bluesky app password for logging in.
 
-1. **Term Database**: The system uses weighted term databases for both Weeb and Furry categories that contain relevant terms and their scores.
+## **How It Works**
 
-2. **Fine-tuning**: The model is fine-tuned on a dataset of Bluesky posts with labeled classifications.
+1. **Term Databases**: The system uses weighted term databases (weeb_terms.csv, furry_terms.csv) for initial heuristic scoring. These scores are used to generate labels for fine-tuning data and as a fallback in classification.  
+2. **Data Preparation**: Raw post text is processed. For fine-tuning, posts are assigned heuristic labels (Weeb, Furry, Slight Weeb, Slight Furry, Normie) based on term scores.  
+3. **Fine-tuning**: The language model is fine-tuned on a dataset of Bluesky posts formatted as prompts and the heuristically generated responses.  
+4. **Evaluation (Post-Finetuning)**: If an evaluation split is used, the fine-tuned model's performance is assessed on unseen data. A classification report and confusion matrix are generated based on the heuristic labels as ground truth.  
+5. **Classification Process**:  
+   - Fetches recent posts for the target user from Bluesky.  
+   - Calculates overall heuristic scores based on the user's combined posts using term databases.  
+   - Uses the fine-tuned model to classify a sample of individual posts.  
+   - Aggregates model predictions (e.g., by taking the most common predicted label for the sampled posts). This aggregated model prediction is the primary classification.  
+   - If the model provides no clear classification, it may fall back to a classification based on the heuristic scores.  
+6. **Score Interpretation (Heuristic Scores)**:  
+   - The Weeb Score, Furry Score, and Normie Score provided in the output are based on the heuristic term-matching system applied to the user's combined posts.  
+   - The heuristic labeling logic (used for training data generation and fallback) typically uses thresholds like:  
+     - Strong signal in one category (e.g., score > 0.7 and dominant): Clear "Weeb" or "Furry".  
+     - Moderate signal (e.g., score > 0.4): "Slight Weeb" or "Slight Furry".  
+     - Low scores: "Normie".
 
-3. **Classification Process**:
-   - Fetches user posts from Bluesky
-   - Calculates initial scores using term databases
-   - Refines classification using the fine-tuned model
-   - Combines scores with proper weighting
-   - Determines the final classification
-
-4. **Score Interpretation**:
-   - High score in one category (>0.6): Clear classification
-   - Moderate score (0.3-0.6): "Slight" classification
-   - Low scores in all categories: Normie
-
-## Example Output
+## **Example Output (Classification)**
 
 ```txt
-=================================================
-Classification Results for @example.bsky.social
-=================================================
-Classification: Weeb
-Weeb Score: 0.725
-Furry Score: 0.152
-Normie Score: 0.275
-=================================================
+==================================================  
+Classification Results for @example.bsky.social  
+==================================================  
+Overall Classification: Weeb  
+  Heuristic Weeb Score: 0.680  
+  Heuristic Furry Score: 0.120  
+  Heuristic Normie Score: 0.320  
+==================================================
 ```
 
-## Notes
+## **Notes**
 
-- The accuracy of classification depends on the quality of the term databases and the diversity of the training data.
-- You need a valid Bluesky account to fetch user posts.
-- The model is fine-tuned using a small subset of features extracted from the original CSV files to keep the process efficient.
+- The accuracy of classification depends heavily on the quality and comprehensiveness of the term databases and the diversity and size of the training data.  
+- The "ground truth" for evaluation metrics is derived from the same heuristic system used to label the training data. This means the evaluation shows how well the model learned to mimic the heuristic, not necessarily its absolute correctness against human judgment.  
+- You need a valid Bluesky account (username and an app password) to fetch user posts.  
+- The model is fine-tuned using LoRA (Low-Rank Adaptation), meaning only adapter weights are saved by default. The `load_finetuned_model`

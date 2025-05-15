@@ -1,11 +1,13 @@
 # Big Files
 bluesky_ten_million_english_only.csv
-subculture_posts_classified.csv
 
 # Local Temp Folder and Output
 temp/
 output/dataset-filter/
 output/subculture-classifier/
+
+# Unsloth Cache
+unsloth_compiled_cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
