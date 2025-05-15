@@ -9,7 +9,6 @@ requires-python = ">=3.12"
 members = [
  "subculture-terms-analyzer",
  "dataset-filter",
- "subculture-post-classifier",
  "bluesky-user-classifier",
 ]
 
