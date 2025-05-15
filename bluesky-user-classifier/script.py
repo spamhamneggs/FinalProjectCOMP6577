@@ -842,8 +842,8 @@ def main():
     finetune_parser.add_argument(
         "--learning_rate",
         type=float,
-        default=2e-5,
-        help="Learning rate (default: 2e-5)",
+        default=2e-4,
+        help="Learning rate (default: 2e-4)",
     )
     finetune_parser.add_argument(
         "--eval_split",
