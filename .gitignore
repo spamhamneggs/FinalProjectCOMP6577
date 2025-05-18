@@ -1,9 +1,11 @@
 # Big Files
 bluesky_ten_million_english_only.csv
 bluesky_ten_million_english_only_processed.csv
+bluesky_ten_million_english_only_processed_one_million.csv
 
 # Local Temp Folder and Output
 temp/
+output/user-classifier/*
 
 # Unsloth Cache
 unsloth_compiled_cache/
