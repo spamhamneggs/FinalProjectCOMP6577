@@ -9,17 +9,17 @@ import math
 from typing import List, Dict, Any, Tuple
 from tqdm import tqdm
 import torch
-from datasets import Dataset
+from datasets import Dataset  # type: ignore
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 # For Bluesky/ATProto
-from atproto import Client
+from atproto import Client  # type: ignore
 
 # For metrics
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split  # type: ignore
+from sklearn.metrics import classification_report, confusion_matrix  # type: ignore
 
 RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
@@ -29,7 +29,7 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(RANDOM_SEED)
 
 
-def process_post_for_training(args) -> Dict[str, Any]:
+def process_post_for_training(args) -> Dict[str, Any] | None:
     """Process a single post for training data generation."""
     text, weeb_terms, furry_terms = args
 
@@ -153,7 +153,9 @@ class BlueskyClassifier:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {self.device}")
 
-        self.model_name = model_name
+        self.model_name = (
+            model_name  # Can be a base model name or path to fine-tuned model
+        )
         self.batch_size = batch_size
         self.model = None
         self.tokenizer = None
@@ -174,6 +176,7 @@ class BlueskyClassifier:
                 "Slight Weeb-Slight Furry",
                 "Slight Furry-None",
                 "Slight Furry-Slight Weeb",
+                "Unknown-Unknown",  # Added for cases where parsing fails
             ]
         )
         # For parsing individual primary/secondary labels if needed elsewhere
@@ -183,6 +186,7 @@ class BlueskyClassifier:
             "Slight Weeb",
             "Slight Furry",
             "Normie",
+            "Unknown",  # Added for robustness
         }
         self.secondary_labels_set = {
             "Weeb",
@@ -190,6 +194,7 @@ class BlueskyClassifier:
             "Slight Weeb",
             "Slight Furry",
             "None",
+            "Unknown",  # Added for robustness
         }
 
         # Load term databases with scores
@@ -206,8 +211,11 @@ class BlueskyClassifier:
     def _load_term_database(self, csv_file: str) -> pd.DataFrame:
         """Load and process a terms CSV file"""
         if not os.path.exists(csv_file):
-            print(f"Error: Required term database {csv_file} not found.")
-            sys.exit(1)  # Exit with error code 1
+            print(
+                f"Warning: Term database {csv_file} not found. Scores for this category might be affected."
+            )
+            # Return an empty DataFrame with expected columns if file not found
+            return pd.DataFrame(columns=["term", "combined_score"])
 
         df = pd.read_csv(csv_file)
         # Ensure 'term' and 'combined_score' columns exist
@@ -232,12 +240,15 @@ class BlueskyClassifier:
         )
         return df
 
-    def setup_model(self):
-        """Initialize the model and tokenizer"""
-        print(f"Loading model: {self.model_name}")
+    def setup_model(self, model_name_or_path: str | None = None):
+        """Initialize the base model and tokenizer, or load a full model from path."""
+        # Use provided model_name_or_path if given, otherwise use instance's model_name
+        load_path = model_name_or_path if model_name_or_path else self.model_name
+        print(f"Loading model from: {load_path}")
         try:
+            # Unsloth's from_pretrained can load base models or fine-tuned models (if PEFT config is present)
             self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-                model_name=self.model_name,
+                model_name=load_path,
                 max_seq_length=2048,
                 dtype=None,  # None will use model's default dtype
                 load_in_4bit=True,
@@ -254,6 +265,28 @@ class BlueskyClassifier:
                 ):  # Check if model config also needs update
                     self.model.config.pad_token_id = self.model.config.eos_token_id
 
+            print(f"Model loaded successfully from {load_path}.")
+            # If we loaded a base model using self.model_name and model_name_or_path was different (e.g. a PEFT path)
+            # this means we might need to apply adapters separately if from_pretrained didn't pick them up.
+            # However, for evaluation, from_pretrained on the PEFT adapter directory should work directly.
+            # For fine-tuning, we set up PEFT adapters after this.
+
+        except Exception as e:
+            print(f"Error loading model {load_path}: {e}")
+            print(
+                "Please ensure the model name/path is correct, you have internet access, and Unsloth is installed correctly."
+            )
+            print(
+                "If this is a GPU-related error, ensure CUDA is set up correctly and a compatible GPU is available."
+            )
+            # Exit or raise, as the classifier cannot function without a model
+            raise RuntimeError(f"Failed to load model: {e}")
+
+    def _setup_peft_adapters(self):
+        """Sets up PEFT adapters for fine-tuning on the currently loaded model."""
+        if not self.model:
+            raise RuntimeError("Base model not loaded. Call setup_model() first.")
+        try:
             # Adapter for fine-tuning
             self.model = FastLanguageModel.get_peft_model(
                 model=self.model,
@@ -271,17 +304,10 @@ class BlueskyClassifier:
                 lora_dropout=0.05,
                 bias="none",
             )
-            print("Model loaded successfully.")
+            print("PEFT adapters configured for fine-tuning.")
         except Exception as e:
-            print(f"Error loading model {self.model_name}: {e}")
-            print(
-                "Please ensure the model name is correct, you have internet access, and Unsloth is installed correctly."
-            )
-            print(
-                "If this is a GPU-related error, ensure CUDA is set up correctly and a compatible GPU is available."
-            )
-            # Exit or raise, as the classifier cannot function without a model
-            raise RuntimeError(f"Failed to load model: {e}")
+            print(f"Error setting up PEFT adapters: {e}")
+            raise RuntimeError(f"Failed to set up PEFT adapters: {e}")
 
     def login_bluesky(self, username: str, password: str):
         """Log in to Bluesky"""
@@ -302,25 +328,27 @@ class BlueskyClassifier:
             print(f"Failed to log in to Bluesky: {e}")
             return False
 
-    def _prepare_training_data(self, bluesky_data_csv: str) -> List[Dict[str, str]]:
-        """Prepare training data from Bluesky posts CSV and term databases using multiprocessing"""
-        print(f"Loading Bluesky data from {bluesky_data_csv} in chunks...")
+    def _prepare_data_from_csv(self, data_csv_path: str) -> List[Dict[str, str]]:
+        """Prepare data (prompts, responses, heuristic labels) from a CSV file using multiprocessing.
+        This is used for preparing training, validation, or evaluation data.
+        """
+        print(f"Loading and preparing data from {data_csv_path} in chunks...")
 
-        if not os.path.exists(bluesky_data_csv):
-            raise FileNotFoundError(f"Bluesky data file {bluesky_data_csv} not found")
+        if not os.path.exists(data_csv_path):
+            raise FileNotFoundError(f"Data file {data_csv_path} not found")
 
-        all_training_data = []
+        all_prepared_data = []
         total_processed_posts = 0
 
         # Reduce number of processes and chunk size
         num_processes = min(4, max(1, cpu_count() - 1))  # Max 4 processes
-        self.chunk_size = 50000  # Smaller chunks
+        # self.chunk_size is an instance variable, can be set via args
 
         try:
             # Use tqdm to wrap the CSV reader (total unknown)
             for chunk_df in tqdm(
                 pd.read_csv(
-                    bluesky_data_csv,
+                    data_csv_path,
                     chunksize=self.chunk_size,
                     usecols=["type", "text"],  # Only load needed columns
                 ),
@@ -333,13 +361,15 @@ class BlueskyClassifier:
                 chunk_df["text"] = chunk_df["text"].astype(str, errors="ignore")
 
                 # Process in smaller batches with a progress bar
-                batch_size = 5000
+                batch_size_processing = 5000  # Internal batching for multiprocessing
                 for start_idx in tqdm(
-                    range(0, len(chunk_df), batch_size),
+                    range(0, len(chunk_df), batch_size_processing),
                     desc="Processing batches",
                     leave=False,
                 ):
-                    batch_df = chunk_df.iloc[start_idx : start_idx + batch_size]
+                    batch_df = chunk_df.iloc[
+                        start_idx : start_idx + batch_size_processing
+                    ]
 
                     process_args = [
                         (text, self.weeb_terms, self.furry_terms)
@@ -356,12 +386,14 @@ class BlueskyClassifier:
                             pool.imap(
                                 process_post_for_training,
                                 process_args,
-                                chunksize=500,  # Process in smaller chunks
+                                chunksize=max(
+                                    1, len(process_args) // (num_processes * 2)
+                                ),  # Dynamic chunksize for imap
                             )
                         )
 
                     valid_results = [r for r in batch_results if r is not None]
-                    all_training_data.extend(valid_results)
+                    all_prepared_data.extend(valid_results)
                     total_processed_posts += len(valid_results)
 
                     # Clear memory
@@ -371,11 +403,11 @@ class BlueskyClassifier:
                 del chunk_df
 
         except Exception as e:
-            print(f"Error processing {bluesky_data_csv}: {e}")
-            return all_training_data
+            print(f"Error processing {data_csv_path}: {e}")
+            return all_prepared_data  # Return what has been processed so far
 
-        print(f"Created {len(all_training_data)} training examples")
-        return all_training_data
+        print(f"Created {len(all_prepared_data)} data examples from {data_csv_path}")
+        return all_prepared_data
 
     def _parse_combined_label_from_text(
         self, text: str, source_type: str = "unknown source"
@@ -422,9 +454,11 @@ class BlueskyClassifier:
                 # Or, more simply, if the line for secondary classification is missing, we might infer "None".
                 # For now, if "Secondary Classification:" line is absent, secondary_label remains "Unknown".
                 # This is handled by the initial defaults.
-                pass
+                # A more robust approach: if primary is known and secondary is "Unknown" (not explicitly "None" from text),
+                # then set secondary to "None".
+                secondary_label = "None"
 
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             # print(f"Error parsing labels from {source_type}: {e}. Text: '{text}'")
             return "Unknown-Unknown"  # Fallback on any parsing error
 
@@ -434,22 +468,30 @@ class BlueskyClassifier:
 
         # If primary is "Unknown", it implies a failure, so secondary is also "Unknown".
         if primary_label == "Unknown":
-            secondary_label = "Unknown"
+            secondary_label = "Unknown"  # Ensure consistency
 
         return f"{primary_label}-{secondary_label}"
 
     def _evaluate_model_and_print_metrics(
-        self, eval_data: List[Dict[str, str]], output_dir: str
+        self, eval_data: List[Dict[str, str]], metrics_output_dir: str
     ):
         """Evaluates the model on the evaluation data and prints metrics for combined labels."""
         if not self.model or not self.tokenizer:
             print("Model or tokenizer not available for evaluation. Skipping.")
             return
 
-        MAX_EVAL_SAMPLES = 10000
+        MAX_EVAL_SAMPLES = 10000  # Limit evaluation samples for practical reasons
         if len(eval_data) > MAX_EVAL_SAMPLES:
-            eval_data = random.sample(eval_data, MAX_EVAL_SAMPLES)
-            print(f"Evaluating on a random subset of {MAX_EVAL_SAMPLES} samples.")
+            print(
+                f"Warning: Evaluation data has {len(eval_data)} samples. Evaluating on a random subset of {MAX_EVAL_SAMPLES} samples."
+            )
+            eval_data_subset = random.sample(eval_data, MAX_EVAL_SAMPLES)
+        else:
+            eval_data_subset = eval_data
+
+        if not eval_data_subset:
+            print("No evaluation data to process. Skipping metrics calculation.")
+            return
 
         y_true_combined = []
         y_pred_combined = []
@@ -457,13 +499,15 @@ class BlueskyClassifier:
         # Ensure model and tokenizer are on the correct device
         self.model.to(self.device)
 
-        batch_size = 16  # You can increase this if you have more VRAM
-        num_batches = math.ceil(len(eval_data) / batch_size)
+        # Use self.batch_size for evaluation batching
+        num_batches = math.ceil(len(eval_data_subset) / self.batch_size)
 
         for batch_idx in tqdm(
             range(num_batches), desc="Evaluating model (batched)", mininterval=10.0
         ):
-            batch = eval_data[batch_idx * batch_size : (batch_idx + 1) * batch_size]
+            batch = eval_data_subset[
+                batch_idx * self.batch_size : (batch_idx + 1) * self.batch_size
+            ]
             prompts = [f"<|user|>\n{item['prompt']}\n<|assistant|>" for item in batch]
             true_labels = [item["true_label_heuristic"] for item in batch]
 
@@ -472,7 +516,8 @@ class BlueskyClassifier:
                 prompts,
                 return_tensors="pt",
                 truncation=True,
-                max_length=getattr(self.tokenizer, "model_max_length", 2048) - 100,
+                max_length=getattr(self.tokenizer, "model_max_length", 2048)
+                - 100,  # Leave space for generation
                 padding=True,
             ).to(self.device)
 
@@ -480,11 +525,11 @@ class BlueskyClassifier:
                 outputs = self.model.generate(
                     input_ids=inputs.input_ids,
                     attention_mask=inputs.attention_mask,
-                    max_new_tokens=70,
+                    max_new_tokens=70,  # Max tokens for the response part
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
-                    do_sample=False,
-                    temperature=0.1,
+                    do_sample=False,  # For consistent evaluation
+                    temperature=0.1,  # Low temperature for less randomness
                 )
 
             for i in range(len(batch)):
@@ -504,28 +549,31 @@ class BlueskyClassifier:
         current_labels_in_data = sorted(list(set(y_true_combined + y_pred_combined)))
 
         # Use all defined labels for the report, plus any "Unknown-Unknown" if it appeared
+        # and any other labels that might have emerged unexpectedly
         report_labels = sorted(
             list(set(self.defined_combined_labels + current_labels_in_data))
         )
 
-        # Prepare metrics directory as a sibling of output_dir
-        metrics_root = os.path.join(os.path.dirname(output_dir), "metrics")
-        metrics_dir = os.path.join(metrics_root, os.path.basename(output_dir))
-        if not os.path.exists(metrics_dir):
-            os.makedirs(metrics_dir)
-            print(f"Created metrics directory: {metrics_dir}")
+        # Ensure the metrics output directory exists
+        if not os.path.exists(metrics_output_dir):
+            os.makedirs(metrics_output_dir)
+            print(f"Created metrics directory: {metrics_output_dir}")
 
         # Save classification report to file
         report_str = classification_report(
-            y_true_combined, y_pred_combined, labels=report_labels, zero_division=0
+            y_true_combined,
+            y_pred_combined,
+            labels=report_labels,
+            zero_division=0,
+            target_names=report_labels,
         )
         print(report_str)
-        report_path = os.path.join(metrics_dir, "classification_report.txt")
+        report_path = os.path.join(metrics_output_dir, "classification_report.txt")
         try:
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(report_str)
             print(f"Classification report saved to {report_path}")
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             print(f"Error saving classification report: {e}")
 
         print("\n--- Confusion Matrix (Combined Labels) ---")
@@ -553,32 +601,35 @@ class BlueskyClassifier:
         plt.yticks(rotation=0, fontsize=8)  # Adjust tick label font size
         plt.tight_layout()
 
-        cm_path = os.path.join(metrics_dir, "confusion_matrix_combined.png")
+        cm_path = os.path.join(metrics_output_dir, "confusion_matrix_combined.png")
         try:
             plt.savefig(cm_path)
             print(f"Confusion matrix saved to {cm_path}")
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             print(f"Error saving confusion matrix: {e}")
         plt.close()  # Close the plot to free memory
 
     def finetune_model(
         self,
-        bluesky_data_csv: str,
+        training_data_csv: str,
         output_dir: str = "finetuned_model",
         epochs: int = 3,
         learning_rate: float = 2e-4,
         eval_split_size: float = 0.20,
+        skip_eval_after_train: bool = False,
     ):
-        """Fine-tune the model using the prepared data and evaluate it."""
+        """Fine-tune the model using the prepared data and optionally evaluate it."""
         if self.model is None or self.tokenizer is None:
             try:
-                self.setup_model()
+                # self.model_name here should be the base model for fine-tuning
+                self.setup_model(self.model_name)
+                self._setup_peft_adapters()  # Setup PEFT adapters after loading base model
             except RuntimeError as e:  # Catch error from setup_model
-                print(f"Failed to setup model during fine-tuning: {e}")
+                print(f"Failed to setup model for fine-tuning: {e}")
                 return None  # Cannot proceed with fine-tuning
 
-        # Prepare all data
-        all_prepared_data = self._prepare_training_data(bluesky_data_csv)
+        # Prepare all data from the training CSV
+        all_prepared_data = self._prepare_data_from_csv(training_data_csv)
         if not all_prepared_data:
             print("No training data prepared. Skipping fine-tuning and evaluation.")
             return None
@@ -617,38 +668,39 @@ class BlueskyClassifier:
                     random_state=RANDOM_SEED,
                     stratify=labels_for_stratification,
                 )
-            else:  # Not enough samples for a split
+            else:  # Not enough samples for a split or stratification
                 if not stratify_possible_sklearn:
                     print(
-                        "Warning: Stratification not possible. Splitting without stratification."
+                        "Warning: Stratification not possible due to class imbalance or too few samples per class. Splitting without stratification."
                     )
                 if not enough_total_samples_for_split:
                     print(
-                        "Warning: Not enough total samples for a split. Using all for training or adjusting."
+                        "Warning: Not enough total samples for a meaningful train/eval split. Adjusting."
                     )
-                if (
-                    enough_total_samples_for_split
-                ):  # Still try non-stratified if enough samples
+
+                if enough_total_samples_for_split:
                     train_data_dicts, eval_data_dicts = train_test_split(
                         all_prepared_data,
                         test_size=eval_split_size,
-                        random_state=RANDOM_SEED,
+                        random_state=RANDOM_SEED,  # No stratification
                     )
-                else:  # Use all for training if not enough for split
+                else:
                     print(
-                        "Warning: Not enough samples for train/eval split. Using all data for training."
+                        "Warning: Not enough samples for train/eval split. Using all data for training and skipping in-training evaluation split."
                     )
                     train_data_dicts = all_prepared_data
-                    eval_data_dicts = []
+                    eval_data_dicts = []  # No evaluation split
+                    skip_eval_after_train = True  # Force skip if no eval data
         else:
             print(
-                "Eval split size is 0 or not enough data. Using all data for training."
+                "Eval split size is 0 or not enough data. Using all data for training. In-training evaluation will be skipped."
             )
             train_data_dicts = all_prepared_data
             eval_data_dicts = []
+            skip_eval_after_train = True  # Force skip if no eval data
 
         print(
-            f"Training with {len(train_data_dicts)} samples, evaluating with {len(eval_data_dicts)} samples."
+            f"Training with {len(train_data_dicts)} samples, evaluating with {len(eval_data_dicts)} samples (if eval not skipped)."
         )
         if not train_data_dicts:
             print(
@@ -680,38 +732,42 @@ class BlueskyClassifier:
         sft_config = SFTConfig(
             output_dir=output_dir,
             num_train_epochs=epochs,
-            per_device_train_batch_size=self.batch_size,
+            per_device_train_batch_size=self.batch_size,  # Use instance batch_size
             gradient_accumulation_steps=4,  # Adjust if OOM
             learning_rate=learning_rate,
             weight_decay=0.01,
             warmup_ratio=0.03,
             lr_scheduler_type="cosine",
-            logging_steps=max(1, len(sft_train_dataset) // (self.batch_size * 10))
-            if sft_train_dataset
+            logging_steps=max(1, len(sft_train_dataset) // (self.batch_size * 10))  # type: ignore
+            if sft_train_dataset and self.batch_size > 0
             else 10,  # Log ~10 times per epoch
             save_strategy="epoch",
-            dataset_num_proc=1,  # Number of processes for dataset processing
+            dataset_num_proc=min(
+                4, os.cpu_count() or 1
+            ),  # Number of processes for dataset processing
             save_total_limit=2,
             remove_unused_columns=True,
             report_to="none",  # "tensorboard" or "wandb" if desired
             max_seq_length=384,  # Max length of formatted prompt + response
-            packing=True,
+            packing=True,  # Packs multiple short examples into one sequence
             optim="adamw_torch",
             fp16=torch.cuda.is_available()
-            and not hasattr(torch.cuda, "is_bf16_supported")
-            and not torch.cuda.is_bf16_supported(),
+            and not (
+                hasattr(torch.cuda, "is_bf16_supported")
+                and torch.cuda.is_bf16_supported()
+            ),  # type: ignore
             bf16=torch.cuda.is_available()
             and hasattr(torch.cuda, "is_bf16_supported")
-            and torch.cuda.is_bf16_supported(),
+            and torch.cuda.is_bf16_supported(),  # type: ignore
             # Added for potential memory saving during training, if supported and useful:
             # gradient_checkpointing=True, # Can save memory but slows down training
         )
 
         trainer = SFTTrainer(
             model=self.model,
-            processing_class=self.tokenizer,
+            tokenizer=self.tokenizer,  # Pass tokenizer explicitly
             args=sft_config,
-            train_dataset=sft_train_dataset,  # Use the list of dicts
+            train_dataset=sft_train_dataset,
             formatting_func=formatting_func,
         )
 
@@ -721,10 +777,12 @@ class BlueskyClassifier:
         print("Starting model fine-tuning...")
         try:
             trainer.train()
-            print(f"Saving fine-tuned model to {output_dir}")
+            print(f"Saving fine-tuned model (adapters) to {output_dir}")
+            # SFTTrainer saves PEFT adapters by default.
             trainer.save_model(output_dir)
+            # Save the tokenizer along with the adapters for easy reloading
             self.tokenizer.save_pretrained(output_dir)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             print(f"Error during training or saving model: {e}")
             if "CUDA out of memory" in str(e):
                 print(
@@ -732,52 +790,50 @@ class BlueskyClassifier:
                 )
             return None  # Indicate failure
 
-        if eval_data_dicts:
-            self._evaluate_model_and_print_metrics(eval_data_dicts, output_dir)
-        else:
-            print("Skipping evaluation as no evaluation data was prepared.")
+        if not skip_eval_after_train and eval_data_dicts:
+            print("Evaluating model after fine-tuning...")
+            # Metrics will be saved relative to the parent of output_dir
+            metrics_parent_dir = (
+                os.path.dirname(output_dir) if os.path.dirname(output_dir) else "."
+            )
+            eval_metrics_dir = os.path.join(
+                metrics_parent_dir, "metrics", os.path.basename(output_dir)
+            )
+            self._evaluate_model_and_print_metrics(eval_data_dicts, eval_metrics_dir)
+        elif skip_eval_after_train:
+            print("Skipping evaluation after training as requested.")
+        else:  # No eval_data_dicts
+            print(
+                "Skipping evaluation as no evaluation data was prepared/available from the split."
+            )
 
         # To save the full model (merged with adapters) if needed:
-        # merged_model_path = os.path.join(output_dir, "merged_model")
+        # print("Merging adapters and saving full model...")
+        # merged_model_path = os.path.join(output_dir, "merged_model_16bit")
         # self.model.save_pretrained_merged(merged_model_path, self.tokenizer, save_method = "merged_16bit")
         # print(f"Full merged model saved to {merged_model_path}")
+        # For 4bit merged model (if base was 4bit and you want to keep it that way, might need specific Unsloth methods)
+        # merged_model_path_4bit = os.path.join(output_dir, "merged_model_4bit")
+        # self.model.save_pretrained_merged(merged_model_path_4bit, self.tokenizer, save_method = "merged_4bit_forced") # Or other appropriate method
+        # print(f"Full 4-bit merged model saved to {merged_model_path_4bit}")
 
         return output_dir
 
     def load_finetuned_model(self, model_path: str):
-        """Load a fine-tuned model (LoRA adapters)"""
-        print(f"Loading fine-tuned LoRA adapters from {model_path}")
-        # When loading a LoRA model, first load the base model, then apply adapters.
-        # However, Unsloth's from_pretrained can often handle this if the path contains adapter_config.json.
-        # For safety, let's assume model_path is where adapters were saved, and base model is self.model_name
-
-        # Re-initialize base model first
-        # self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-        #     model_name=self.model_name, # Or load from a config if base model changed
-        #     max_seq_length=2048,
-        #     dtype=None,
-        #     load_in_4bit=True,
-        # )
-        # Then load adapters
-        # self.model = FastLanguageModel.get_peft_model(self.model, peft_model_id=model_path)
-        # print("Fine-tuned model with LoRA adapters loaded successfully.")
-
-        # Simpler: Unsloth's from_pretrained can load a PEFT model directly if saved correctly
-        # This assumes model_path is a directory containing the adapter files AND tokenizer files.
-        # If you saved only adapters, you need to load base model first then apply adapters.
-        # The SFTTrainer.save_model saves adapters. Tokenizer is saved separately.
-        # So, we need to load the base model and then apply the adapters.
-
-        # If `model_path` is the output_dir from finetuning:
-        self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-            model_name=model_path,  # This should point to the directory with adapter_config.json etc.
-            max_seq_length=2048,
-            dtype=None,
-            load_in_4bit=True,
-        )
-        # Set padding_side to 'left' for decoder-only models
-        self.tokenizer.padding_side = "left"
-        print(f"Fine-tuned model loaded from {model_path} successfully.")
+        """Load a fine-tuned model (PEFT/LoRA adapters or full model).
+        Unsloth's from_pretrained can often handle loading PEFT models directly
+        if the directory contains adapter_config.json.
+        """
+        print(f"Attempting to load fine-tuned model from {model_path}")
+        try:
+            # This will load the base model and apply adapters if adapter_config.json is present.
+            # Or load a full fine-tuned model if it's saved that way.
+            self.setup_model(model_name_or_path=model_path)
+            # self.model_name is updated to the path of the loaded model
+            self.model_name = model_path
+        except RuntimeError as e:
+            print(f"Failed to load fine-tuned model from {model_path}: {e}")
+            raise  # Re-raise the exception to be handled by the caller
 
     async def fetch_user_posts(self, user_handle: str, limit: int = 100) -> List[str]:
         """Fetch user posts from Bluesky"""
@@ -795,20 +851,24 @@ class BlueskyClassifier:
                 # Let's assume login_bluesky handles its own async if needed or is called from sync context before this.
                 # For now, this is a conceptual addition.
                 # await self.login_bluesky(bsky_user_env, bsky_pass_env) # This would require login_bluesky to be async
+                # For now, we will rely on explicit login before calling classify
                 print(
-                    "Warning: Auto-login attempt from fetch_user_posts might not work as expected due to sync/async."
+                    "Warning: Auto-login attempt from fetch_user_posts might not work as expected due to sync/async. Ensure client is logged in."
                 )
 
             if self.client is None:  # Check again after potential auto-login attempt
                 raise ValueError(
-                    "Not logged in to Bluesky. Call login_bluesky first or set BLUESKY_USERNAME/BLUESKY_PASSWORD env vars."
+                    "Not logged in to Bluesky. Call login_bluesky first or set BLUESKY_USERNAME/BLUESKY_PASSWORD env vars and ensure login succeeded."
                 )
 
         try:
-            user_info = await self.client.get_profile(actor=user_handle)
-            user_did = user_info.did
+            # Ensure client.get_profile and client.get_author_feed are awaited
+            user_info = await self.client.get_profile(actor=user_handle)  # type: ignore
+            user_did = user_info.did  # type: ignore
 
-            posts_texts = []  # Renamed to avoid conflict with 'posts' variable name if used elsewhere
+            posts_texts: List[
+                str
+            ] = []  # Renamed to avoid conflict with 'posts' variable name if used elsewhere
             cursor = None
             fetched_count = 0
 
@@ -828,33 +888,40 @@ class BlueskyClassifier:
                 ):  # Should not happen if loop condition is correct
                     break
 
-                response = await self.client.get_author_feed(
+                response = await self.client.get_author_feed(  # type: ignore
                     actor=user_did, limit=fetch_limit_this_request, cursor=cursor
                 )
                 if (
-                    not response or not response.feed
+                    not response or not response.feed  # type: ignore
                 ):  # Check if response or response.feed is None
                     break
 
-                for feed_item in response.feed:
+                for feed_item in response.feed:  # type: ignore
                     if (
                         hasattr(feed_item, "post")
                         and feed_item.post  # Check if post exists
                         and hasattr(feed_item.post, "record")
                         and feed_item.post.record  # Check if record exists
                         and hasattr(feed_item.post.record, "text")
+                        and isinstance(
+                            feed_item.post.record.text, str
+                        )  # Ensure text is string
                     ):  # Check if text exists
                         posts_texts.append(feed_item.post.record.text)
                         fetched_count += 1
                         if fetched_count >= limit:
                             break
 
-                cursor = response.cursor
+                if hasattr(response, "cursor"):
+                    cursor = response.cursor  # type: ignore
+                else:  # Should not happen with valid response
+                    break
+
                 if cursor is None:
                     break
             print(f"Fetched {len(posts_texts)} posts for user {user_handle}")
             return posts_texts
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             print(f"Error fetching posts for {user_handle}: {e}")
             return []
 
@@ -918,11 +985,11 @@ class BlueskyClassifier:
         return primary_label, secondary_label
 
     def classify_user(self, posts: List[str]) -> Dict[str, Any]:
-        """Classify a user based on their posts using the fine-tuned model and heuristics."""
+        """Classify a user based on their posts using the loaded model and heuristics."""
         if not posts:
             return {
-                "primary_classification": "Unknown",
-                "secondary_classification": "Unknown",
+                "primary_classification": "Unknown (No Posts)",
+                "secondary_classification": "None",
                 "weeb_score": 0.0,  # Ensure float
                 "furry_score": 0.0,  # Ensure float
                 "normie_score": 1.0,  # Ensure float
@@ -930,20 +997,18 @@ class BlueskyClassifier:
             }
 
         if self.model is None or self.tokenizer is None:
-            # Try to load a default model if not already loaded.
-            # This is a fallback, ideally model should be explicitly loaded or fine-tuned.
+            # This should ideally not happen if setup_model or load_finetuned_model was called.
+            # self.model_name should point to the model to be used.
             print(
-                "Warning: Model not explicitly loaded for classify_user. Attempting to load default or fine-tuned if path known."
+                f"Warning: Model not explicitly loaded for classify_user. Attempting to load from self.model_name: {self.model_name}."
             )
-            # This requires a path. If `self.model_name` points to a fine-tuned model dir, this might work.
-            # Or, you might want to have a default_model_path attribute.
             try:
-                self.load_finetuned_model(
+                self.setup_model(
                     self.model_name
-                )  # Assuming model_name could be a path to fine-tuned
-            except Exception as e:
+                )  # Try loading based on the instance's model_name
+            except Exception as e:  # pylint: disable=broad-except
                 raise ValueError(
-                    f"Model not loaded and failed to auto-load. Call setup_model or load_finetuned_model first. Error: {e}"
+                    f"Model not loaded and failed to auto-load from '{self.model_name}'. Call setup_model or load_finetuned_model first. Error: {e}"
                 )
 
         # Ensure model is on the correct device
@@ -971,53 +1036,69 @@ class BlueskyClassifier:
         # e.g., the 10 most recent or a random sample of 10, if posts list is long.
         # For now, using the first few as in original logic.
         posts_for_model = [p for p in posts if isinstance(p, str) and p.strip()][
-            : min(10, len(posts))
+            : min(
+                10, len(posts)
+            )  # Process at most 10 posts with the model
         ]
 
-        for post_text in tqdm(
-            posts_for_model,
-            desc="Classifying posts with model",
-            leave=False,
-            mininterval=10.0,
-        ):
-            # No need to check post_text.strip() again, already filtered in posts_for_model
+        prompts_for_model = []
+        for post_text in posts_for_model:
             prompt = f"Analyze this Bluesky post for weeb and furry traits: {post_text}"
             formatted_prompt = f"<|user|>\n{prompt}\n<|assistant|>"
+            prompts_for_model.append(formatted_prompt)
 
-            max_input_length = getattr(self.tokenizer, "model_max_length", 2048) - 100
-
-            inputs = self.tokenizer(
-                formatted_prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=max_input_length,  # Use calculated max_input_length
-            ).to(self.device)
-
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    input_ids=inputs.input_ids,
-                    attention_mask=inputs.attention_mask,
-                    max_new_tokens=70,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    do_sample=False,
-                    temperature=0.1,
-                )
-
-            input_ids_length = inputs.input_ids.shape[1]
-            generated_tokens = outputs[0][input_ids_length:]
-            model_response_part = self.tokenizer.decode(
-                generated_tokens, skip_special_tokens=True
-            ).strip()
-
-            predicted_combined = self._parse_combined_label_from_text(
-                model_response_part, source_type="model output for user classification"
-            )
-            if (
-                "Unknown"
-                not in predicted_combined  # Only consider valid model predictions
+        if prompts_for_model:
+            # Batch process posts with the model
+            num_model_batches = math.ceil(len(prompts_for_model) / self.batch_size)
+            for batch_idx in tqdm(
+                range(num_model_batches),
+                desc="Classifying posts with model (batched)",
+                leave=False,
+                mininterval=5.0,
             ):
-                model_predicted_combined_labels.append(predicted_combined)
+                batch_prompts = prompts_for_model[
+                    batch_idx * self.batch_size : (batch_idx + 1) * self.batch_size
+                ]
+
+                max_input_length = (
+                    getattr(self.tokenizer, "model_max_length", 2048) - 100
+                )  # type: ignore
+
+                inputs = self.tokenizer(  # type: ignore
+                    batch_prompts,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_input_length,
+                    padding=True,
+                ).to(self.device)
+
+                with torch.no_grad():
+                    outputs = self.model.generate(  # type: ignore
+                        input_ids=inputs.input_ids,
+                        attention_mask=inputs.attention_mask,
+                        max_new_tokens=70,
+                        pad_token_id=self.tokenizer.pad_token_id,  # type: ignore
+                        eos_token_id=self.tokenizer.eos_token_id,  # type: ignore
+                        do_sample=False,
+                        temperature=0.1,
+                    )
+
+                for i in range(len(batch_prompts)):
+                    input_ids_length = inputs.input_ids[i].shape[0]
+                    generated_tokens = outputs[i][input_ids_length:]
+                    model_response_part = self.tokenizer.decode(  # type: ignore
+                        generated_tokens, skip_special_tokens=True
+                    ).strip()
+
+                    predicted_combined = self._parse_combined_label_from_text(
+                        model_response_part,
+                        source_type="model output for user classification",
+                    )
+                    if (
+                        "Unknown"
+                        not in predicted_combined  # Only consider valid model predictions
+                    ):
+                        model_predicted_combined_labels.append(predicted_combined)
 
         final_primary_classification = h_primary
         final_secondary_classification = h_secondary
@@ -1039,9 +1120,9 @@ class BlueskyClassifier:
                     else:  # Should not happen with "X-Y" format
                         final_primary_classification = parsed_labels[0]
                         final_secondary_classification = "None"  # Fallback
-                else:
+                else:  # Should not happen if parsing is correct
                     final_primary_classification = most_common_combined
-                    final_secondary_classification = "None"
+                    final_secondary_classification = "None"  # Fallback
             # else: primary/secondary remain heuristic-based if model had no valid predictions
 
         normie_score_val = max(
@@ -1055,7 +1136,7 @@ class BlueskyClassifier:
             "weeb_score": round(float(heuristic_weeb_score), 3),  # Ensure float
             "furry_score": round(float(heuristic_furry_score), 3),  # Ensure float
             "normie_score": round(normie_score_val, 3),
-            "model_combined_labels_debug": model_predicted_combined_labels,
+            "model_combined_labels_debug": model_predicted_combined_labels,  # For seeing individual post model outputs
         }
 
 
@@ -1066,12 +1147,19 @@ class BlueskyUserDataset:
             raise FileNotFoundError(f"Input file {input_csv} not found")
         print(f"Loading data from {input_csv}...")
         try:
-            df = pd.read_csv(input_csv)
+            # Try to read with error handling for bad lines
+            df = pd.read_csv(input_csv, on_bad_lines="skip")
         except pd.errors.EmptyDataError:
             print(f"Error: Input file {input_csv} is empty. Cannot preprocess.")
             return
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             print(f"Error reading {input_csv}: {e}")
+            return
+
+        if "type" not in df.columns or "text" not in df.columns:
+            print(
+                f"Error: Input CSV {input_csv} must contain 'type' and 'text' columns."
+            )
             return
 
         df = df[df["type"] == "post"]
@@ -1093,82 +1181,140 @@ class BlueskyUserDataset:
             return
 
         print(f"Saving processed data to {output_csv}...")
-        df.to_csv(output_csv, index=False)
+        df[["text", "type"]].to_csv(
+            output_csv, index=False
+        )  # Save only relevant columns
         print(f"Saved {len(df)} processed posts")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bluesky User Classifier with Dual Labels & Metrics"
+        description="Bluesky User Classifier with Fine-tuning, Evaluation, and Classification"
     )
     subparsers = parser.add_subparsers(
         dest="command", help="Command to run", required=True
     )
 
+    # --- Preprocess Command ---
     preprocess_parser = subparsers.add_parser(
-        "preprocess", help="Preprocess Bluesky data"
+        "preprocess", help="Preprocess Bluesky data CSV (filters posts, cleans text)"
     )
-    preprocess_parser.add_argument("--input", required=True, help="Input CSV file")
-    preprocess_parser.add_argument("--output", required=True, help="Output CSV file")
+    preprocess_parser.add_argument(
+        "--input",
+        required=True,
+        help="Input CSV file (must contain 'type' and 'text' columns)",
+    )
+    preprocess_parser.add_argument(
+        "--output", required=True, help="Output CSV file for processed posts"
+    )
 
+    # --- Finetune Command ---
     finetune_parser = subparsers.add_parser(
-        "finetune", help="Fine-tune the model and evaluate"
+        "finetune", help="Fine-tune the language model and optionally evaluate"
     )
     finetune_parser.add_argument(
-        "--data", required=True, help="Processed Bluesky data CSV"
+        "--data_csv",
+        required=True,
+        help="Path to the processed Bluesky data CSV for fine-tuning and validation split",
     )
     finetune_parser.add_argument(
-        "--output_dir", default="finetuned_model", help="Output directory"
+        "--output_dir",
+        default="finetuned_model",
+        help="Directory to save the fine-tuned model (adapters) and tokenizer",
     )
     finetune_parser.add_argument(
-        "--epochs", type=int, default=3, help="Training epochs"
+        "--base_model_name",
+        default="unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
+        help="Base model name from Hugging Face Hub for fine-tuning (e.g., 'unsloth/Qwen3-0.6B-unsloth-bnb-4bit')",
     )
     finetune_parser.add_argument(
-        "--batch_size", type=int, default=8, help="Batch size (default: 8)"
+        "--epochs", type=int, default=3, help="Number of training epochs (default: 3)"
+    )
+    finetune_parser.add_argument(
+        "--batch_size", type=int, default=8, help="Training batch size (default: 8)"
     )
     finetune_parser.add_argument(
         "--learning_rate",
         type=float,
-        default=2e-4,
-        help="Learning rate (default: 2e-4)",
+        default=2e-4,  # Corresponds to 0.0002
+        help="Learning rate for fine-tuning (default: 2e-4)",
     )
     finetune_parser.add_argument(
-        "--eval_split",
+        "--eval_split_size",
         type=float,
         default=0.2,
-        help="Proportion of data for evaluation (0 to 1)",
+        help="Proportion of data from --data_csv to use for validation during fine-tuning (0 to 1, default: 0.2). If 0, no validation split is made from training data.",
     )
     finetune_parser.add_argument(
-        "--model_name",
-        default="unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
-        help="Base model name for fine-tuning",
+        "--skip_eval_after_train",
+        action="store_true",  # Makes it a flag, default is False
+        help="If set, skips the evaluation step after fine-tuning is complete.",
     )
     finetune_parser.add_argument(
-        "--chunk_size",
+        "--chunk_size_csv",  # Renamed for clarity
         type=int,
-        default=100000,
-        help="Chunk size for reading CSV data during training prep.",
+        default=50000,  # Reduced default
+        help="Chunk size for reading the input CSV data during data preparation (default: 50000).",
     )
 
-    classify_parser = subparsers.add_parser("classify", help="Classify a Bluesky user")
-    classify_parser.add_argument(
-        "--model",
+    # --- Evaluate Command ---
+    evaluate_parser = subparsers.add_parser(
+        "evaluate", help="Evaluate a pre-trained (fine-tuned or base) model"
+    )
+    evaluate_parser.add_argument(
+        "--model_path",
         required=True,
-        help="Path to fine-tuned model directory (or base model if not fine-tuned)",
+        help="Path to the fine-tuned model directory (containing adapters and tokenizer) or a base model name from Hugging Face Hub.",
+    )
+    evaluate_parser.add_argument(
+        "--eval_data_csv",
+        required=True,
+        help="Path to the CSV file containing data for evaluation (will be processed to create prompts and heuristic labels).",
+    )
+    evaluate_parser.add_argument(
+        "--metrics_output_dir",
+        default="evaluation_metrics",
+        help="Directory to save evaluation metrics (classification report, confusion matrix).",
+    )
+    evaluate_parser.add_argument(
+        "--batch_size", type=int, default=16, help="Evaluation batch size (default: 16)"
+    )
+    evaluate_parser.add_argument(
+        "--chunk_size_csv",  # Renamed for clarity
+        type=int,
+        default=50000,  # Reduced default
+        help="Chunk size for reading the evaluation CSV data during data preparation (default: 50000).",
+    )
+
+    # --- Classify Command ---
+    classify_parser = subparsers.add_parser(
+        "classify", help="Classify a Bluesky user based on their posts"
     )
     classify_parser.add_argument(
-        "--username", required=True, help="Bluesky username to classify"
+        "--model_path",  # Changed from --model to --model_path for consistency
+        required=True,
+        help="Path to the fine-tuned model directory (containing adapters and tokenizer) or a base model name from Hugging Face Hub to use for classification.",
     )
-    # Optional login credentials, can also use environment variables
+    classify_parser.add_argument(
+        "--username",
+        required=True,
+        help="Bluesky username (handle) to classify (e.g., 'username.bsky.social')",
+    )
     classify_parser.add_argument(
         "--bluesky_user",
         default=os.getenv("BLUESKY_USERNAME"),
-        help="Your Bluesky login username (or set BLUESKY_USERNAME env var)",
+        help="Your Bluesky login username (or set BLUESKY_USERNAME env var). Required for fetching posts.",
     )
     classify_parser.add_argument(
         "--bluesky_pass",
         default=os.getenv("BLUESKY_PASSWORD"),
-        help="Your Bluesky login password (or set BLUESKY_PASSWORD env var)",
+        help="Your Bluesky login password (or set BLUESKY_PASSWORD env var). Required for fetching posts.",
+    )
+    classify_parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=8,
+        help="Batch size for classifying user posts with the model (default: 8)",
     )
 
     args = parser.parse_args()
@@ -1177,76 +1323,92 @@ def main():
         BlueskyUserDataset.preprocess_and_save(args.input, args.output)
 
     elif args.command == "finetune":
+        # For fine-tuning, model_name in BlueskyClassifier is the base model.
         classifier = BlueskyClassifier(
-            model_name=args.model_name, batch_size=args.batch_size
+            model_name=args.base_model_name, batch_size=args.batch_size
         )
-        classifier.chunk_size = args.chunk_size  # Set chunk_size from args
+        classifier.chunk_size = args.chunk_size_csv
         classifier.finetune_model(
-            bluesky_data_csv=args.data,
+            training_data_csv=args.data_csv,
             output_dir=args.output_dir,
             epochs=args.epochs,
             learning_rate=args.learning_rate,
-            eval_split_size=args.eval_split,
+            eval_split_size=args.eval_split_size,
+            skip_eval_after_train=args.skip_eval_after_train,
         )
+
+    elif args.command == "evaluate":
+        # For evaluation, model_name in BlueskyClassifier is the model to be evaluated.
+        classifier = BlueskyClassifier(
+            model_name=args.model_path,
+            batch_size=args.batch_size,  # model_path is passed as model_name
+        )
+        classifier.chunk_size = args.chunk_size_csv
+        try:
+            # Load the specified model (could be fine-tuned adapters or a base model)
+            classifier.load_finetuned_model(
+                args.model_path
+            )  # This calls setup_model internally
+
+            print(f"Preparing evaluation data from: {args.eval_data_csv}")
+            eval_prepared_data = classifier._prepare_data_from_csv(args.eval_data_csv)
+
+            if eval_prepared_data:
+                print(f"Starting evaluation using model: {args.model_path}")
+                classifier._evaluate_model_and_print_metrics(
+                    eval_prepared_data, args.metrics_output_dir
+                )
+            else:
+                print(
+                    f"No data prepared from {args.eval_data_csv}. Skipping evaluation."
+                )
+
+        except RuntimeError as e:
+            print(f"Error during evaluation setup or execution: {e}")
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
 
     elif args.command == "classify":
         import asyncio
 
         async def run_classification():
-            # Use the --model argument as the model_name for the classifier initialization
-            # This path could be a base model or a fine-tuned one.
-            # load_finetuned_model will be called internally if it's a path to adapters.
-            classifier = BlueskyClassifier(model_name=args.model)
+            # For classification, model_name in BlueskyClassifier is the model to be used.
+            # It could be a base model name or a path to a fine-tuned model.
+            classifier = BlueskyClassifier(
+                model_name=args.model_path, batch_size=args.batch_size
+            )
 
-            # Attempt to load the model. If model_name is a path to adapters,
-            # from_pretrained in setup_model (or load_finetuned_model) should handle it.
             try:
-                # If args.model is specifically a fine-tuned adapter path,
-                # it's better to load it explicitly after base model setup.
-                # However, Unsloth's from_pretrained is quite flexible.
-                # Let's assume `model_name` in constructor handles it, or `load_finetuned_model` is called.
-                # The current `classify_user` tries to load if model is None.
-                # For clarity, we can call setup_model or load_finetuned_model here.
-                if os.path.exists(os.path.join(args.model, "adapter_config.json")):
-                    classifier.load_finetuned_model(args.model)
-                else:  # Assume it's a base model name
-                    classifier.setup_model()
+                # Load the model specified by --model_path.
+                # load_finetuned_model handles paths to adapters or full models.
+                # setup_model can handle base model names from Hub.
+                # Unsloth's from_pretrained (called by setup_model/load_finetuned_model) is flexible.
+                classifier.load_finetuned_model(args.model_path)
 
             except RuntimeError as e:
-                print(f"Failed to initialize or load model: {e}")
+                print(
+                    f"Failed to initialize or load model from '{args.model_path}': {e}"
+                )
                 return
 
             if not args.bluesky_user or not args.bluesky_pass:
                 print(
-                    "Bluesky username or password not provided. Please set BLUESKY_USERNAME and BLUESKY_PASSWORD environment variables or use --bluesky_user and --bluesky_pass arguments."
+                    "Bluesky login username or password not provided. Please set BLUESKY_USERNAME and BLUESKY_PASSWORD environment variables or use --bluesky_user and --bluesky_pass arguments."
                 )
                 return
 
-            # The login method in the class is currently synchronous.
-            # To call it from an async function, it ideally should be async or run in an executor.
-            # For now, let's assume the atproto client library might handle some level of sync/async internally for login,
-            # or this needs refactoring if strict async is required for login.
-            # The original script's login was synchronous.
-            # For `await self.client.get_profile` etc., the client object itself must support async operations.
-
-            # Let's make the login call synchronous for now, as the method is defined sync
-            # This might block the event loop if it's a long operation.
-            # Proper async handling would involve making login_bluesky async.
-            # For now, we'll call it as is.
-
-            # Create the client instance for login
-            classifier.client = Client()
+            # Perform login using the atproto Client directly within the async function
+            # This ensures async operations are handled correctly.
+            # The classifier.client will be set upon successful login.
+            temp_client = Client()
             try:
-                # Perform login (assuming client.login can be called this way)
-                # If client.login is async, this needs `await` and login_bluesky to be async
-                await classifier.client.login(args.bluesky_user, args.bluesky_pass)
-                print(f"Logged in to Bluesky as {args.bluesky_user}")
-                # Assign the successfully logged-in client back to the classifier instance
-                # This step is crucial if login_bluesky was not called or failed.
-                # classifier.client = client_instance
-            except Exception as e:
+                print(f"Logging in to Bluesky as {args.bluesky_user}...")
+                await temp_client.login(args.bluesky_user, args.bluesky_pass)
+                classifier.client = temp_client  # Assign the logged-in client to the classifier instance
+                print(f"Successfully logged in to Bluesky as {args.bluesky_user}")
+            except Exception as e:  # pylint: disable=broad-except
                 print(f"Failed to log in to Bluesky: {e}")
-                return
+                return  # Exit if login fails
 
             posts = await classifier.fetch_user_posts(args.username)
             if not posts:
@@ -1263,7 +1425,9 @@ def main():
                     "model_combined_labels_debug": [],
                 }
             else:
-                result = classifier.classify_user(posts)
+                result = classifier.classify_user(
+                    posts
+                )  # This method uses the loaded model
 
             print("\n" + "=" * 50)
             print(f"Classification Results for @{args.username}")
@@ -1278,7 +1442,7 @@ def main():
                 and result["model_combined_labels_debug"]
             ):
                 print(
-                    f"  Model Post Classifications (sample): {result['model_combined_labels_debug']}"
+                    f"  Model Post Classifications (sample of up to 10 posts): {result['model_combined_labels_debug']}"
                 )
             print("=" * 50 + "\n")
 
@@ -1290,8 +1454,22 @@ def main():
 if __name__ == "__main__":
     import multiprocessing
 
-    multiprocessing.freeze_support()
-    from unsloth import FastLanguageModel
-    from trl import SFTTrainer, SFTConfig
+    multiprocessing.freeze_support()  # For PyInstaller or cx_Freeze if used
+
+    # These imports are potentially heavy and only needed if certain commands are run.
+    # Unsloth and TRL are specific to fine-tuning and model loading with PEFT.
+    try:
+        from unsloth import FastLanguageModel  # type: ignore
+    except ImportError:
+        print(
+            "Error: Unsloth library not found. Please install with 'pip install \"unsloth[cu1xx-ampere-torch210]\"' (adjust for your CUDA/torch version) or 'pip install unsloth'."
+        )
+        sys.exit(1)
+
+    try:
+        from trl import SFTTrainer, SFTConfig  # type: ignore
+    except ImportError:
+        print("Error: TRL library not found. Please install with 'pip install trl'.")
+        sys.exit(1)
 
     main()

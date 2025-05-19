@@ -2,6 +2,8 @@
 bluesky_ten_million_english_only.csv
 bluesky_ten_million_english_only_processed.csv
 bluesky_ten_million_english_only_processed_one_million.csv
+calculated_scores_for_data.csv
+heuristic_labelled_data_details.csv
 
 # Local Temp Folder and Output
 temp/

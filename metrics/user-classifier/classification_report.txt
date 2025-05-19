@@ -1,0 +1,18 @@
+                          precision    recall  f1-score   support
+
+              Furry-None       0.00      0.00      0.00         0
+       Furry-Slight Weeb       0.00      0.00      0.00         0
+              Furry-Weeb       0.00      0.00      0.00         0
+             Normie-None       1.00      0.12      0.21     10000
+       Slight Furry-None       0.00      0.00      0.00         0
+Slight Furry-Slight Weeb       0.00      0.00      0.00         0
+        Slight Weeb-None       0.00      0.00      0.00         0
+Slight Weeb-Slight Furry       0.00      0.00      0.00         0
+         Unknown-Unknown       0.00      0.00      0.00         0
+              Weeb-Furry       0.00      0.00      0.00         0
+               Weeb-None       0.00      0.00      0.00         0
+       Weeb-Slight Furry       0.00      0.00      0.00         0
+
+                accuracy                           0.12     10000
+               macro avg       0.08      0.01      0.02     10000
+            weighted avg       1.00      0.12      0.21     10000
