@@ -13,7 +13,7 @@ from nltk.tokenize import word_tokenize
 from scipy.stats import entropy
 from sklearn.decomposition import LatentDirichletAllocation, MiniBatchNMF
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, davies_bouldin_score
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
@@ -401,34 +401,44 @@ def evaluate_model(
     # Topic-document distribution
     doc_topic_dist = model.transform(X_train)
 
-    # Calculate silhouette score using topic distributions
+    # Calculate silhouette score and Davies-Bouldin score using topic distributions
+    # Sample data for faster calculation if needed
+    if doc_topic_dist.shape[0] > 5000:
+        sample_size = 5000
+        indices = random.choice(
+            key,
+            jnp.arange(doc_topic_dist.shape[0]),
+            shape=(sample_size,),
+            replace=False,
+        )
+        sample_dist = doc_topic_dist[indices]
+        sample_labels = jnp.argmax(sample_dist, axis=1)
+    else:
+        sample_dist = doc_topic_dist
+        sample_labels = jnp.argmax(sample_dist, axis=1)
+
+    # Convert JAX arrays to NumPy arrays
+    sample_dist_np = np.asarray(sample_dist)
+    sample_labels_np = np.asarray(sample_labels)
+
+    # Calculate silhouette score
     try:
-        # Sample data for faster calculation if needed
-        if doc_topic_dist.shape[0] > 5000:
-            sample_size = 5000
-            indices = random.choice(
-                key,
-                jnp.arange(doc_topic_dist.shape[0]),
-                shape=(sample_size,),
-                replace=False,
-            )
-            sample_dist = doc_topic_dist[indices]
-            sample_labels = jnp.argmax(sample_dist, axis=1)
-        else:
-            sample_dist = doc_topic_dist
-            sample_labels = jnp.argmax(sample_dist, axis=1)
-
-        # Convert JAX arrays to NumPy arrays
-        sample_dist_np = np.asarray(sample_dist)
-        sample_labels_np = np.asarray(sample_labels)
-
-        # Calculate silhouette score
         metrics[f"{prefix}silhouette_score"] = silhouette_score(
             sample_dist_np, sample_labels_np
         )
     except Exception as e:
         metrics[f"{prefix}silhouette_score"] = None
         print(f"Warning: Could not calculate silhouette score for {model_name} - {e}")
+
+    # Calculate Davies-Bouldin score
+    try:
+        metrics[f"{prefix}davies_bouldin_score"] = davies_bouldin_score(
+            sample_dist_np, sample_labels_np
+        )
+    except Exception as e:
+        metrics[f"{prefix}davies_bouldin_score"] = None
+        print(f"Warning: Could not calculate Davies-Bouldin score for {model_name} - {e}")
+
 
     # Calculate topic distribution statistics
     try:

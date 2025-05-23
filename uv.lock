@@ -184,6 +184,7 @@ version = "0.1.0"
 source = { virtual = "bluesky-user-classifier" }
 dependencies = [
     { name = "atproto" },
+    { name = "bitsandbytes" },
     { name = "datasets" },
     { name = "matplotlib" },
     { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
@@ -203,6 +204,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "atproto", specifier = ">=0.0.61" },
+    { name = "bitsandbytes", specifier = ">=0.45.5" },
     { name = "datasets", specifier = ">=3.3.2" },
     { name = "matplotlib", specifier = ">=3.10.3" },
     { name = "numpy", specifier = ">=1.26.4" },
