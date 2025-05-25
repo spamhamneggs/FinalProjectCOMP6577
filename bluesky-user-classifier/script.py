@@ -39,7 +39,7 @@ def normalize_text(s: str) -> str:
     """
     s = re.sub(r'(.)\1{2,}', r'\1\1', s)  # Collapse repeated chars: “soooo” → “soo”
     s = re.sub(r'\s+', ' ', s)  # Collapse whitespace
-    return s.strip().lower()
+    return s.strip()
 
 
 def calculate_category_score_static(text_content: str, terms_df: pd.DataFrame) -> float:
@@ -56,7 +56,7 @@ def calculate_category_score_static(text_content: str, terms_df: pd.DataFrame) -
     ):
         return 0.0
 
-    text_content_lower = normalize_text(text_content)  # Normalize text for efficiency
+    text_content_lower = normalize_text(text_content).lower()  # Normalize text for efficiency
 
     if "term" not in terms_df.columns or "combined_score" not in terms_df.columns:
         return 0.0
@@ -765,27 +765,22 @@ class BlueskyClassifier:
             )
             return None
 
-        # Oversample rare classes to balance training set
-        from collections import defaultdict
-        by_label = defaultdict(list)
-        for ex in train_data_dicts:
-            by_label[ex['true_label_heuristic']].append(ex)
-        target = max(len(v) for v in by_label.values())
-        balanced = []
-        for label, examples in by_label.items():
-            n = len(examples)
-            if n == 0: continue
-            picks = examples.copy()
-            if n < target:
-                picks += random.choices(examples, k=target-n)
-            balanced.extend(picks)
-        random.shuffle(balanced)
-        train_data_dicts = balanced
+        # Oversample using sample weights (WeightedRandomSampler logic, but in-memory)
+        label_counts = pd.Series([ex['true_label_heuristic'] for ex in train_data_dicts]).value_counts()
+        label_to_weight = {label: 1.0/count for label, count in label_counts.items()}
+        sample_weights = [label_to_weight[ex['true_label_heuristic']] for ex in train_data_dicts]
+        n_samples = len(train_data_dicts)
+        indices = random.choices(
+            range(n_samples),
+            weights=sample_weights,
+            k=n_samples
+        )
+        oversampled_train_data = [train_data_dicts[i] for i in indices]
 
         sft_train_dataset = Dataset.from_list(
             [
                 {"prompt": d["prompt"], "response": d["response"]}
-                for d in train_data_dicts
+                for d in oversampled_train_data
             ]
         )
         eos_token = self.tokenizer.eos_token
