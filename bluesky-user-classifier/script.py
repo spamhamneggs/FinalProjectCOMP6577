@@ -22,6 +22,10 @@ from atproto import Client  # type: ignore
 from sklearn.model_selection import train_test_split  # type: ignore
 from sklearn.metrics import classification_report, confusion_matrix  # type: ignore
 
+# For classification
+from dotenv import load_dotenv
+load_dotenv()
+
 RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
@@ -201,6 +205,7 @@ def process_post_for_training(args) -> Dict[str, Any] | None:
         "Respond ONLY with:\n"
         "Primary Classification: <label>\n"
         "Secondary Classification: <label>\n"
+        "Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n"
         f"Post: {prompt_text_content}"
     )
     response = (
@@ -872,13 +877,13 @@ class BlueskyClassifier:
             print(f"Failed to load fine-tuned model from {model_path}: {e}")
             raise
 
-    async def fetch_user_posts(self, user_handle: str, limit: int = 100) -> List[str]:
+    async def fetch_user_posts(self, user_handle: str, limit: int = 1000) -> List[str]:
         if self.client is None:
             raise ValueError(
                 "Bluesky client not authenticated. Ensure login is performed before fetching posts."
             )
         try:
-            user_info = await self.client.get_profile(actor=user_handle)
+            user_info = self.client.get_profile(actor=user_handle)
             user_did = user_info.did
             posts_texts: List[str] = []
             cursor = None
@@ -890,7 +895,7 @@ class BlueskyClassifier:
                 fetch_limit_this_request = min(100, limit - fetched_count)
                 if fetch_limit_this_request <= 0:
                     break
-                response = await self.client.get_author_feed(
+                response = self.client.get_author_feed(
                     actor=user_did, limit=fetch_limit_this_request, cursor=cursor
                 )
                 if not response or not response.feed:
@@ -963,6 +968,7 @@ class BlueskyClassifier:
             f"<|user|>\nAnalyze this Bluesky post for weeb and furry traits. Respond ONLY with:\n"
             f"Primary Classification: <label>\n"
             f"Secondary Classification: <label>\n"
+            f"Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n"
             f"Post: {post_text}\n<|assistant|>"
             for post_text in posts_for_model
         ]
@@ -1229,12 +1235,12 @@ def main():
     )
     classify_parser.add_argument(
         "--bluesky_user",
-        default=os.getenv("BLUESKY_USERNAME"),
+        default=os.environ.get("BLUESKY_USERNAME"),
         help="Your Bluesky login username",
     )
     classify_parser.add_argument(
         "--bluesky_pass",
-        default=os.getenv("BLUESKY_PASSWORD"),
+        default=os.environ.get("BLUESKY_PASSWORD"),
         help="Your Bluesky login password",
     )
     classify_parser.add_argument(
@@ -1357,7 +1363,7 @@ def main():
                 temp_client = Client()
                 try:
                     print(f"Logging in to Bluesky as {args.bluesky_user}...")
-                    await temp_client.login(args.bluesky_user, args.bluesky_pass)
+                    temp_client.login(args.bluesky_user, args.bluesky_pass)
                     classifier.client = temp_client
                     print("Successfully logged in to Bluesky.")
                 except Exception as e:
