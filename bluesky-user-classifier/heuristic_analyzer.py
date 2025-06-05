@@ -7,14 +7,21 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple
 from tqdm import tqdm
+import re
+import json
 
 # --- Configuration ---
 # Default paths for term databases, can be overridden by command-line arguments
-DEFAULT_WEEB_TERMS_PATH = "output/terms-analysis/weeb_terms.csv"
-DEFAULT_FURRY_TERMS_PATH = "output/terms-analysis/furry_terms.csv"
+DEFAULT_WEEB_TERMS_PATH = "output/terms-analysis-bertopic/weeb_terms_bertopic.csv"
+DEFAULT_FURRY_TERMS_PATH = "output/terms-analysis-bertopic/furry_terms_bertopic.csv"
 DEFAULT_OUTPUT_DIR = "heuristic_analysis_results_category_specific_percentile"
 
+
 # --- Reusable Heuristic Logic ---
+def normalize_text(s: str) -> str:
+    s = re.sub(r"(.)\1{2,}", r"\1\1", s)  # "soooo" → "soo"
+    s = re.sub(r"\s+", " ", s)  # Collapse whitespace
+    return s.strip()
 
 
 def load_term_database(csv_file: str) -> pd.DataFrame:
@@ -47,7 +54,7 @@ def load_term_database(csv_file: str) -> pd.DataFrame:
 def calculate_category_score(text_content: str, terms_df: pd.DataFrame) -> float:
     """
     Calculate a normalized score for a category based on text and terms.
-    Score = sum of matched term scores / sum of all term scores in the category.
+    Token-based: Score = sum of matched term scores / sum of all term scores in the category.
     This results in a score between 0 and 1.
     """
     if (
@@ -57,7 +64,8 @@ def calculate_category_score(text_content: str, terms_df: pd.DataFrame) -> float
     ):
         return 0.0
 
-    text_content_lower = text_content.lower()
+    # Tokenize text (simple whitespace split, lowercased)
+    tokens = set(normalize_text(text_content).lower().split())
 
     if "term" not in terms_df.columns or "combined_score" not in terms_df.columns:
         return 0.0
@@ -68,7 +76,8 @@ def calculate_category_score(text_content: str, terms_df: pd.DataFrame) -> float
 
     matched_terms_score_sum = 0.0
     for term, score_val in zip(terms_df["term"], terms_df["combined_score"]):
-        if str(term).lower() in text_content_lower:
+        # Token-based match: check if the term (lowercased) is in the token set
+        if str(term).lower() in tokens:
             matched_terms_score_sum += float(score_val)
 
     max_potential_score = terms_df["combined_score"].sum()
@@ -91,8 +100,8 @@ def determine_classification_labels_category_specific(
     """
     Determine primary and secondary classification labels based on weeb and furry scores,
     using category-specific cutoff scores derived from their respective percentiles.
+    Prevents "Slight Weeb-Furry" or "Slight Furry-Weeb" as a combined label.
     """
-
     # Step 1: Determine the strength category for Weeb score
     weeb_strength_category = "Normie"  # Default if below normie cutoff
     if w_score > weeb_strong_cutoff:
@@ -185,6 +194,11 @@ def determine_classification_labels_category_specific(
             and primary_base_type == secondary_base_type
             and secondary_base_type != "None"
         ):
+            secondary_label = "None"
+
+        # Prevent "Slight Weeb-Furry" or "Slight Furry-Weeb" as a combined label
+        # If primary is "Slight Weeb" or "Slight Furry", secondary must be "None"
+        if primary_label in ("Slight Weeb", "Slight Furry"):
             secondary_label = "None"
 
     return primary_label, secondary_label
@@ -333,6 +347,22 @@ def analyze_heuristics(
             "Warning: No furry_scores to calculate percentiles from. Using 0.0 for furry cutoffs."
         )
 
+    # Save thresholds to JSON file
+    thresholds = {
+        "weeb_normie_cutoff": float(actual_weeb_normie_cutoff),
+        "weeb_strong_cutoff": float(actual_weeb_strong_cutoff),
+        "furry_normie_cutoff": float(actual_furry_normie_cutoff),
+        "furry_strong_cutoff": float(actual_furry_strong_cutoff),
+        "weeb_normie_percentile": weeb_normie_p,
+        "weeb_strong_percentile": weeb_strong_p,
+        "furry_normie_percentile": furry_normie_p,
+        "furry_strong_percentile": furry_strong_p,
+    }
+    thresholds_json_path = os.path.join(current_output_dir, "category_thresholds.json")
+    with open(thresholds_json_path, "w", encoding="utf-8") as f:
+        json.dump(thresholds, f, indent=2)
+    print(f"Saved category-specific thresholds to {thresholds_json_path}")
+
     # Apply Classification Labels using Category-Specific Dynamic Thresholds
     print(
         "\nApplying classification labels using category-specific dynamic thresholds..."
@@ -408,6 +438,7 @@ def analyze_heuristics(
         linestyle="--",
         label=f"Strong Cutoff ({actual_weeb_strong_cutoff:.4f}) @ P{weeb_strong_p}",
     )
+    plt.xlim(right=0.02)
     plt.legend(fontsize="small")
 
     plt.subplot(1, 2, 2)
@@ -427,6 +458,7 @@ def analyze_heuristics(
         linestyle="--",
         label=f"Strong Cutoff ({actual_furry_strong_cutoff:.4f}) @ P{furry_strong_p}",
     )
+    plt.xlim(right=0.02)
     plt.legend(fontsize="small")
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])

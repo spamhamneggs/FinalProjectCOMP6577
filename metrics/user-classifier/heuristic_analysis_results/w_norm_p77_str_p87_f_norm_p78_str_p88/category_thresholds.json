@@ -1,0 +1,10 @@
+{
+  "weeb_normie_cutoff": 0.0031438820680281,
+  "weeb_strong_cutoff": 0.0046837805429179,
+  "furry_normie_cutoff": 0.0034268958631142,
+  "furry_strong_cutoff": 0.005129756311077809,
+  "weeb_normie_percentile": 77,
+  "weeb_strong_percentile": 87,
+  "furry_normie_percentile": 78,
+  "furry_strong_percentile": 88
+}

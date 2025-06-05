@@ -1,0 +1,5 @@
+{
+    "bertopic_hybrid_refined_n_topics": 100,
+    "bertopic_hybrid_refined_silhouette_score": 0.0195,
+    "bertopic_hybrid_refined_davies_bouldin_score": 3.9785
+}

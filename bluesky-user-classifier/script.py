@@ -46,28 +46,33 @@ def normalize_text(s: str) -> str:
     return s.strip()
 
 
-def calculate_category_score_static(text_content: str, terms_df: pd.DataFrame) -> float:
+def calculate_category_score(text_content: str, terms_df: pd.DataFrame) -> float:
     """
-    Static version of calculate_category_score.
-    Calculates a normalized score (0-1) for a category based on text and terms.
-    Score = sum of matched term scores / sum of all term scores in the category.
+    Calculate a normalized score for a category based on text and terms.
+    Token-based: Score = sum of matched term scores / sum of all term scores in the category.
+    This results in a score between 0 and 1.
     """
     if (
         terms_df.empty
         or not isinstance(text_content, str)
-        or terms_df["combined_score"].sum()
-        == 0  # Avoid division by zero if no terms or all scores are 0
+        or terms_df["combined_score"].sum() == 0
     ):
         return 0.0
 
-    text_content_lower = normalize_text(text_content).lower()  # Normalize text for efficiency
+    # Tokenize text (simple whitespace split, lowercased)
+    tokens = set(normalize_text(text_content).lower().split())
 
     if "term" not in terms_df.columns or "combined_score" not in terms_df.columns:
         return 0.0
+    if not terms_df["term"].apply(isinstance, args=(str,)).all():
+        print(
+            "Warning: Non-string values found in 'term' column of terms_df during score calculation."
+        )
 
     matched_terms_score_sum = 0.0
     for term, score_val in zip(terms_df["term"], terms_df["combined_score"]):
-        if str(term).lower() in text_content_lower:
+        # Token-based match: check if the term (lowercased) is in the token set
+        if str(term).lower() in tokens:
             matched_terms_score_sum += float(score_val)
 
     max_potential_score = terms_df["combined_score"].sum()
@@ -77,6 +82,7 @@ def calculate_category_score_static(text_content: str, terms_df: pd.DataFrame) -
         if max_potential_score > 0
         else 0.0
     )
+
 
 
 def determine_labels_from_scores_and_cutoffs(
@@ -159,13 +165,17 @@ def determine_labels_from_scores_and_cutoffs(
         ):
             secondary_label = "None"
 
+    # If primary is a "Slight" classification, force secondary to "None"
+    if primary_label.startswith("Slight "):
+        secondary_label = "None"
+
     return primary_label, secondary_label
 
 
 def process_post_for_training(args) -> Dict[str, Any] | None:
     """
     Process a single post for training data generation.
-    Receives pre-calculated category-specific percentile cutoffs.
+    Now includes cardinal scores in the prompt for the model to learn from.
     """
     (
         text,
@@ -187,8 +197,8 @@ def process_post_for_training(args) -> Dict[str, Any] | None:
         if not text.strip():
             return None
 
-    weeb_score = calculate_category_score_static(text, weeb_terms_df)
-    furry_score = calculate_category_score_static(text, furry_terms_df)
+    weeb_score = calculate_category_score(text, weeb_terms_df)
+    furry_score = calculate_category_score(text, furry_terms_df)
 
     primary_label, secondary_label = determine_labels_from_scores_and_cutoffs(
         weeb_score,
@@ -200,13 +210,16 @@ def process_post_for_training(args) -> Dict[str, Any] | None:
     )
 
     prompt_text_content = str(text)
+    # Modified prompt to include cardinal scores as input
     prompt = (
-        "Analyze this Bluesky post for weeb and furry traits. "
+        "Analyze this Bluesky post using the provided scores and content. "
         "Respond ONLY with:\n"
         "Primary Classification: <label>\n"
         "Secondary Classification: <label>\n"
-        "Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n"
-        f"Post: {prompt_text_content}"
+        "Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n\n"
+        f"Weeb Score: {weeb_score:.6f}\n"
+        f"Furry Score: {furry_score:.6f}\n"
+        f"Post Content: {prompt_text_content}"
     )
     response = (
         f"Primary Classification: {primary_label}\n"
@@ -217,6 +230,8 @@ def process_post_for_training(args) -> Dict[str, Any] | None:
         "prompt": prompt,
         "response": response,
         "true_label_heuristic": f"{primary_label}-{secondary_label}",
+        "weeb_score": weeb_score,
+        "furry_score": furry_score,
     }
 
 
@@ -263,9 +278,7 @@ class BlueskyClassifier:
                 "Furry-Slight Weeb",
                 "Furry-Weeb",
                 "Slight Weeb-None",
-                "Slight Weeb-Slight Furry",
                 "Slight Furry-None",
-                "Slight Furry-Slight Weeb",
                 "Unknown-Unknown",
             ]
         )
@@ -287,10 +300,10 @@ class BlueskyClassifier:
         }
 
         self.weeb_terms = self._load_term_database(
-            "output/terms-analysis/weeb_terms.csv"
+            "output/terms-analysis-bertopic/weeb_terms_bertopic.csv"
         )
         self.furry_terms = self._load_term_database(
-            "output/terms-analysis/furry_terms.csv"
+            "output/terms-analysis-bertopic/furry_terms_bertopic.csv"
         )
         self.client = None
 
@@ -324,7 +337,7 @@ class BlueskyClassifier:
     def _calculate_category_score(
         self, text_content: str, terms_df: pd.DataFrame
     ) -> float:
-        return calculate_category_score_static(text_content, terms_df)
+        return calculate_category_score(text_content, terms_df)
 
     def _determine_heuristic_labels_with_cutoffs(
         self, w_score: float, f_score: float
@@ -964,14 +977,25 @@ class BlueskyClassifier:
         posts_for_model = [p for p in safe_posts if p.strip()][
             : min(10, len(safe_posts))
         ]
-        prompts_for_model = [
-            f"<|user|>\nAnalyze this Bluesky post for weeb and furry traits. Respond ONLY with:\n"
-            f"Primary Classification: <label>\n"
-            f"Secondary Classification: <label>\n"
-            f"Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n"
-            f"Post: {post_text}\n<|assistant|>"
-            for post_text in posts_for_model
-        ]
+        
+        # Modified to include scores in prompts for model inference
+        prompts_for_model = []
+        for post_text in posts_for_model:
+            # Calculate individual post scores for the model
+            post_weeb_score = self._calculate_category_score(post_text, self.weeb_terms)
+            post_furry_score = self._calculate_category_score(post_text, self.furry_terms)
+            
+            prompt = (
+                f"<|user|>\nAnalyze this Bluesky post using the provided scores and content. "
+                f"Respond ONLY with:\n"
+                f"Primary Classification: <label>\n"
+                f"Secondary Classification: <label>\n"
+                f"Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n\n"
+                f"Weeb Score: {post_weeb_score:.6f}\n"
+                f"Furry Score: {post_furry_score:.6f}\n"
+                f"Post Content: {post_text}\n<|assistant|>"
+            )
+            prompts_for_model.append(prompt)
 
         if prompts_for_model:
             num_model_batches = math.ceil(len(prompts_for_model) / self.batch_size)
@@ -1195,10 +1219,10 @@ def main():
     evaluate_parser.add_argument(
         "--weeb-normie-percentile",
         type=int,
-        default=60,
+        default=70,
         choices=range(0, 101),
         metavar="[0-100]",
-        help="Percentile for Weeb 'Normie' cutoff (default: 60)",
+        help="Percentile for Weeb 'Normie' cutoff (default: 70)",
     )
     evaluate_parser.add_argument(
         "--weeb-strong-percentile",
@@ -1211,10 +1235,10 @@ def main():
     evaluate_parser.add_argument(
         "--furry-normie-percentile",
         type=int,
-        default=60,
+        default=70,
         choices=range(0, 101),
         metavar="[0-100]",
-        help="Percentile for Furry 'Normie' cutoff (default: 60)",
+        help="Percentile for Furry 'Normie' cutoff (default: 70)",
     )
     evaluate_parser.add_argument(
         "--furry-strong-percentile",
@@ -1250,7 +1274,7 @@ def main():
     classify_parser.add_argument(
         "--weeb-normie-percentile",
         type=int,
-        default=60,
+        default=70,
         choices=range(0, 101),
         metavar="[0-100]",
         help="Percentile for Weeb 'Normie' cutoff (default: 60)",
@@ -1266,7 +1290,7 @@ def main():
     classify_parser.add_argument(
         "--furry-normie-percentile",
         type=int,
-        default=60,
+        default=70,
         choices=range(0, 101),
         metavar="[0-100]",
         help="Percentile for Furry 'Normie' cutoff (default: 60)",

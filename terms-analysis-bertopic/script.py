@@ -36,14 +36,12 @@ weeb_seed_terms = [
     "anime", "manga", "otaku", "waifu", "kawaii", "isekai", "nani", "baka",
     "cosplay", "senpai", "moe", "tsundere", "weeb", "weeaboo", "animu",
     "sugoi", "desu", "chan", "kun", "sama", "yokai", "shounen", "shoujo",
-    "hentai", "ecchi", "loli", "shota", "yandere", "kuudere", "dandere"
 ]
 
 furry_seed_terms = [
     "furry", "fursona", "anthro", "floof", "fursuit", "paws", "uwu", "owo",
     "furcon", "furries", "fursuits", "pawsome", "tailwag", "yiff", "murr",
-    "awoo", "feral", "anthropomorphic", "scalies", "protogen", "sergal",
-    "dragon", "wolf", "fox", "cat", "dog", "husky", "sergal"
+    "awoo", "feral", "anthropomorphic", "scalies", "protogen",
 ]
 
 # --- Preprocessing and Utility Functions ---
@@ -81,7 +79,7 @@ def load_stop_words(file_path):
         print(f"Error loading stop words: {e}. Using empty set.")
     return stop_words
 
-STOP_WORDS = load_stop_words("./thirdparty/stopwords-en.txt")
+STOP_WORDS = load_stop_words("./thirdparty/stopwords-custom.txt")
 
 def tokenize_text(text):
     if not isinstance(text, str):
@@ -112,6 +110,71 @@ def extract_tfidf_features(texts, max_features=5000, min_df=20, max_df=0.90):
     n_samples, n_features = X_tfidf.shape
     print(f"Extracted {n_features} TF-IDF features from {n_samples} documents")
     return X_tfidf, vectorizer, feature_names_tfidf
+
+def clean_and_validate_term(term):
+    """Clean and validate individual terms to ensure one term per row"""
+    if not isinstance(term, str):
+        return None
+    term = term.strip().lower()
+    if not term:
+        return None
+    words = term.split()
+    if len(words) > 2:
+        return None
+    if any(sep in term for sep in [',', ';', '|', '\t', '/', '\\', '_']):
+        return None
+    if len(term) < 2:
+        return None
+    if not any(c.isalpha() for c in term):
+        return None
+    if any(c.isdigit() for c in term):
+        return None
+    if term in STOP_WORDS:
+        return None
+    return term
+
+def extract_individual_terms_from_topic_terms(topic_terms, max_terms_per_topic=50):
+    """Extract and clean individual terms from BERTopic topic terms"""
+    individual_terms = []
+    seen_terms = set()
+    for term, score in topic_terms[:max_terms_per_topic]:
+        cleaned_term = clean_and_validate_term(term)
+        if cleaned_term and cleaned_term not in seen_terms:
+            words = cleaned_term.split()
+            if len(words) == 1:
+                individual_terms.append((cleaned_term, score))
+                seen_terms.add(cleaned_term)
+            elif len(words) == 2:
+                word1, word2 = words
+                if (len(word1) > 2 and len(word2) > 2 and 
+                    word1 not in STOP_WORDS and word2 not in STOP_WORDS):
+                    individual_terms.append((cleaned_term, score))
+                    seen_terms.add(cleaned_term)
+                    for word in words:
+                        clean_word = clean_and_validate_term(word)
+                        if (clean_word and clean_word not in seen_terms and 
+                            len(clean_word) > 3 and clean_word not in STOP_WORDS):
+                            individual_terms.append((clean_word, score * 0.7))
+                            seen_terms.add(clean_word)
+    term_scores = {}
+    for term, score in individual_terms:
+        if term not in term_scores or score > term_scores[term]:
+            term_scores[term] = score
+    result = [(term, score) for term, score in term_scores.items()]
+    result.sort(key=lambda x: x[1], reverse=True)
+    return result
+
+def validate_dataframe_for_csv(df):
+    """Ensure dataframe is properly formatted for CSV output"""
+    if df.empty:
+        return df
+    if 'term' in df.columns:
+        df['term'] = df['term'].apply(lambda x: clean_and_validate_term(str(x)) if pd.notna(x) else None)
+        df = df.dropna(subset=['term'])
+        df = df[df['term'] != '']
+        df = df.sort_values('combined_score', ascending=False)
+        df = df.drop_duplicates(subset=['term'], keep='first')
+    return df
 
 # --- Metric Calculation Functions ---
 def calculate_term_specificity(term_idx_tfidf, X_tfidf, seed_docs_indices_tfidf):
@@ -176,174 +239,6 @@ def create_guidance_labels(texts_series, weeb_seeds, furry_seeds):
         f"Other: {y_numeric_labels.count(-1)}"
     )
     return y_labels, y_numeric_labels
-
-# --- Threshold Filtering Functions ---
-def get_threshold_summary(df_terms):
-    """Show threshold values that would be used"""
-    if df_terms.empty:
-        return
-    
-    print("\n=== Threshold Analysis ===")
-    for metric in ['combined_score', 'subculture_relevance', 'seed_closeness']:
-        if metric in df_terms.columns:
-            print(f"{metric}:")
-            print(f"  Mean: {df_terms[metric].mean():.3f}")
-            print(f"  Std:  {df_terms[metric].std():.3f}")
-            print(f"  25th: {df_terms[metric].quantile(0.25):.3f}")
-            print(f"  50th: {df_terms[metric].quantile(0.50):.3f}")
-            print(f"  75th: {df_terms[metric].quantile(0.75):.3f}")
-            print(f"  90th: {df_terms[metric].quantile(0.90):.3f}")
-
-def filter_by_percentile_thresholds(df_terms):
-    """Use percentile-based thresholds - adapts to actual score distribution"""
-    combined_75th = df_terms['combined_score'].quantile(0.75)
-    combined_50th = df_terms['combined_score'].quantile(0.50)
-    combined_25th = df_terms['combined_score'].quantile(0.25)
-    
-    relevance_75th = df_terms['subculture_relevance'].quantile(0.75)
-    closeness_75th = df_terms['seed_closeness'].quantile(0.75)
-    
-    # Tier 1: Top 25% by combined score OR top performers in key metrics
-    tier1 = df_terms[
-        (df_terms['combined_score'] >= combined_75th) |
-        (df_terms['subculture_relevance'] >= relevance_75th) |
-        (df_terms['seed_closeness'] >= closeness_75th)
-    ]
-    
-    # Tier 2: Top 50% with decent relevance
-    tier2 = df_terms[
-        (df_terms['combined_score'] >= combined_50th) &
-        (df_terms['combined_score'] < combined_75th) &
-        (df_terms['subculture_relevance'] >= df_terms['subculture_relevance'].quantile(0.30))
-    ]
-    
-    # Tier 3: Top 75% with any relevance signal
-    tier3 = df_terms[
-        (df_terms['combined_score'] >= combined_25th) &
-        (df_terms['combined_score'] < combined_50th) &
-        ((df_terms['subculture_relevance'] > 0) |
-         (df_terms['seed_closeness'] > 0) |
-         (df_terms['specificity'] > 0))
-    ]
-    
-    # Combine tiers with reasonable limits
-    result = pd.concat([
-        tier1.head(400),
-        tier2.head(250),
-        tier3.head(150)
-    ], ignore_index=True)
-    
-    return result.drop_duplicates(subset=['term']).sort_values('combined_score', ascending=False)
-
-def filter_by_statistical_thresholds(df_terms):
-    """Use statistical significance thresholds (mean + N*std)"""
-    combined_mean = df_terms['combined_score'].mean()
-    combined_std = df_terms['combined_score'].std()
-    
-    relevance_mean = df_terms['subculture_relevance'].mean()
-    relevance_std = df_terms['subculture_relevance'].std()
-    
-    # High quality: 1+ standard deviations above mean
-    high_threshold = combined_mean + combined_std
-    high_quality = df_terms[df_terms['combined_score'] >= high_threshold]
-    
-    # Medium quality: Above mean, with good relevance (using std dev)
-    relevance_threshold = relevance_mean + (0.5 * relevance_std)
-    medium_quality = df_terms[
-        (df_terms['combined_score'] >= combined_mean) &
-        (df_terms['combined_score'] < high_threshold) &
-        (df_terms['subculture_relevance'] >= relevance_threshold)
-    ]
-    
-    # Low quality: Above minimum threshold with any positive signal
-    min_threshold = max(0.01, combined_mean - combined_std)
-    low_relevance_threshold = max(0.01, relevance_mean - relevance_std)
-    
-    low_quality = df_terms[
-        (df_terms['combined_score'] >= min_threshold) &
-        (df_terms['combined_score'] < combined_mean) &
-        ((df_terms['subculture_relevance'] >= low_relevance_threshold) | 
-         (df_terms['seed_closeness'] > 0))
-    ]
-    
-    result = pd.concat([
-        high_quality.head(500),
-        medium_quality.head(300),
-        low_quality.head(200)
-    ], ignore_index=True)
-    
-    return result.drop_duplicates(subset=['term']).sort_values('combined_score', ascending=False)
-
-def filter_by_multi_metric_thresholds(df_terms):
-    """Require terms to meet thresholds on multiple independent metrics"""
-    metrics = ['combined_score', 'subculture_relevance', 'seed_closeness', 'specificity', 'similarity']
-    thresholds = {}
-    
-    for metric in metrics:
-        if metric in df_terms.columns:
-            thresholds[f'{metric}_high'] = df_terms[metric].quantile(0.70)
-            thresholds[f'{metric}_med'] = df_terms[metric].quantile(0.40)
-            thresholds[f'{metric}_low'] = df_terms[metric].quantile(0.20)
-    
-    # High quality: Strong on multiple metrics
-    high_quality = df_terms[
-        (df_terms['combined_score'] >= thresholds['combined_score_high']) &
-        ((df_terms['subculture_relevance'] >= thresholds['subculture_relevance_med']) |
-         (df_terms['seed_closeness'] >= thresholds['seed_closeness_med']) |
-         (df_terms['specificity'] >= thresholds['specificity_med']))
-    ]
-    
-    # Medium quality: Good on at least two metrics
-    medium_quality = df_terms[
-        ~df_terms['term'].isin(high_quality['term']) &
-        (
-            ((df_terms['combined_score'] >= thresholds['combined_score_med']) &
-             (df_terms['subculture_relevance'] >= thresholds['subculture_relevance_low'])) |
-            ((df_terms['seed_closeness'] >= thresholds['seed_closeness_med']) &
-             (df_terms['combined_score'] >= thresholds['combined_score_low'])) |
-            ((df_terms['specificity'] >= thresholds['specificity_high']) &
-             (df_terms['subculture_relevance'] > 0))
-        )
-    ]
-    
-    result = pd.concat([high_quality, medium_quality], ignore_index=True)
-    return result.sort_values('combined_score', ascending=False)
-
-def select_optimal_threshold_method(df_terms):
-    """Automatically select the best threshold method based on data characteristics"""
-    if df_terms.empty:
-        return df_terms
-    
-    n_terms = len(df_terms)
-    score_range = df_terms['combined_score'].max() - df_terms['combined_score'].min()
-    score_std = df_terms['combined_score'].std()
-    
-    print(f"Data characteristics: {n_terms} terms, score_range={score_range:.3f}, std={score_std:.3f}")
-    
-    # Choose method based on data characteristics
-    if n_terms < 100:
-        print("Using percentile thresholds (small dataset)")
-        return filter_by_percentile_thresholds(df_terms)
-    elif score_std < 0.1:
-        print("Using multi-metric thresholds (low score variance)")
-        return filter_by_multi_metric_thresholds(df_terms)
-    else:
-        print("Using statistical thresholds (normal distribution)")
-        return filter_by_statistical_thresholds(df_terms)
-
-def filter_terms_by_adaptive_thresholds(df_terms, method='percentile'):
-    """Filter terms using adaptive thresholds based on data distribution"""
-    if df_terms.empty:
-        return df_terms
-    
-    if method == 'percentile':
-        return filter_by_percentile_thresholds(df_terms)
-    elif method == 'std_dev':
-        return filter_by_statistical_thresholds(df_terms)
-    elif method == 'multi_metric':
-        return filter_by_multi_metric_thresholds(df_terms)
-    else:
-        return df_terms
 
 # --- Enhanced Term Extraction Functions ---
 def expand_terms_with_semantic_similarity(
@@ -587,26 +482,31 @@ def identify_subculture_terms_bertopic(
     doc_counts_tfidf = np.array(X_tfidf.sum(axis=0)).flatten()
     term_data = {}
 
-    # Extract terms from all topics
+    # Extract terms from all topics with aggressive cleaning
     for topic_id in valid_topic_ids:
-        terms_in_topic = topic_model.get_topic(topic_id)
-        if terms_in_topic:
-            for term, score in terms_in_topic[:top_terms_per_topic]:
-                if term not in STOP_WORDS and len(term) > 1:
-                    # Calculate subculture relevance
+        raw_terms_in_topic = topic_model.get_topic(topic_id)
+        if raw_terms_in_topic:
+            cleaned_terms = extract_individual_terms_from_topic_terms(
+                raw_terms_in_topic, max_terms_per_topic=top_terms_per_topic
+            )
+            for term, score in cleaned_terms:
+                if (term not in STOP_WORDS and 
+                    len(term) > 2 and 
+                    len(term) < 20):
                     subculture_relevance = 0.0
-                    if term.lower() in [s.lower() for s in seed_terms_for_subculture]:
+                    term_lower = term.lower()
+                    if term_lower in [s.lower() for s in seed_terms_for_subculture]:
                         subculture_relevance = 1.0
-                    elif any(seed.lower() in term.lower() for seed in seed_terms_for_subculture):
+                    elif any(seed.lower() in term_lower for seed in seed_terms_for_subculture):
+                        subculture_relevance = 0.7
+                    elif any(term_lower in seed.lower() for seed in seed_terms_for_subculture):
                         subculture_relevance = 0.5
-
                     if term not in term_data:
                         term_data[term] = {
                             "bertopic_score": 0.0,
                             "count": 0,
                             "subculture_relevance": 0.0,
                         }
-
                     term_data[term]["bertopic_score"] = max(term_data[term]["bertopic_score"], score)
                     term_data[term]["count"] += 1
                     term_data[term]["subculture_relevance"] = max(
@@ -657,7 +557,6 @@ def identify_subculture_terms_bertopic(
 
     df_terms = pd.DataFrame(processed_terms)
 
-    # Enhanced filtering
     df_terms = df_terms[
         (df_terms["subculture_relevance"] > 0)
         | (df_terms["seed_closeness"] > 0.1)
@@ -692,7 +591,6 @@ def identify_subculture_terms_bertopic(
             if f"normalized_{f}" not in df_terms.columns:
                 df_terms[f"normalized_{f}"] = 0.0
 
-        # Enhanced weighting
         weights = {
             "specificity": 0.20,
             "similarity": 0.15,
@@ -712,18 +610,10 @@ def identify_subculture_terms_bertopic(
         df_terms["combined_score"] = 0.5
 
     df_terms = df_terms.sort_values("combined_score", ascending=False)
-    
-    # Show threshold analysis
-    get_threshold_summary(df_terms)
-    
-    # Apply adaptive threshold filtering
-    if threshold_method == 'auto':
-        final_terms = select_optimal_threshold_method(df_terms)
-    else:
-        final_terms = filter_terms_by_adaptive_thresholds(df_terms, method=threshold_method)
-    
-    print(f"Filtered from {len(df_terms)} to {len(final_terms)} terms using {threshold_method} thresholds")
-    
+
+    # --- Output all terms, skip thresholding ---
+    final_terms = df_terms
+    print(f"Outputting all {len(final_terms)} terms (no thresholding applied)")
     return final_terms
 
 def identify_subculture_terms_comprehensive(
@@ -787,8 +677,8 @@ def identify_subculture_terms_comprehensive(
             if col not in combined_df.columns:
                 combined_df[col] = 0.0
         
-        # Apply final threshold filtering
-        final_df = select_optimal_threshold_method(combined_df)
+        # Output all combined terms, skip thresholding
+        final_df = combined_df
         
         print(f"\n=== Final Results for {subculture_name} ===")
         print(f"Total unique terms: {len(final_df)}")
@@ -844,12 +734,15 @@ def evaluate_bertopic_model(topic_model, test_texts_list, model_name_prefix=""):
     prefix = f"{model_name_prefix}_" if model_name_prefix else ""
     topic_info = topic_model.get_topic_info()
     metrics[f"{prefix}n_topics"] = len(topic_info[topic_info["Topic"] != -1])
-    metrics[f"{prefix}topic_diversity"] = calculate_topic_diversity_bertopic(topic_model)
 
-    print(f"Evaluating BERTopic model ({prefix})... Test set size: {len(test_texts_list)}")
+    print(
+        f"Evaluating BERTopic model ({prefix})... Test set size: {len(test_texts_list)}"
+    )
     sample_size_eval = min(2000, len(test_texts_list))
     if len(test_texts_list) > sample_size_eval:
-        eval_indices = np.random.choice(len(test_texts_list), sample_size_eval, replace=False)
+        eval_indices = np.random.choice(
+            len(test_texts_list), sample_size_eval, replace=False
+        )
         sampled_test_texts = [test_texts_list[i] for i in eval_indices]
     else:
         sampled_test_texts = test_texts_list
@@ -863,37 +756,63 @@ def evaluate_bertopic_model(topic_model, test_texts_list, model_name_prefix=""):
         topic_assignments_test, _ = topic_model.transform(sampled_test_texts)
 
         print("Extracting embeddings for BERTopic evaluation...")
-        embedding_model = topic_model.embedding_model
-        if hasattr(embedding_model, "encode"):
+
+        embedding_model = None
+        test_embeddings_np = None
+
+        if (
+            hasattr(topic_model, "embedding_model")
+            and topic_model.embedding_model is not None
+        ):
+            embedding_model = topic_model.embedding_model
+            if hasattr(embedding_model, "encode"):
+                test_embeddings_np = np.asarray(
+                    embedding_model.encode(sampled_test_texts, show_progress_bar=False)
+                )
+
+        if test_embeddings_np is None and hasattr(topic_model, "embedding_model"):
+            if isinstance(topic_model.embedding_model, str):
+                print(f"Loading embedding model: {topic_model.embedding_model}")
+                embedding_model = SentenceTransformer(topic_model.embedding_model)
+                test_embeddings_np = np.asarray(
+                    embedding_model.encode(sampled_test_texts, show_progress_bar=False)
+                )
+
+        if test_embeddings_np is None:
+            print("Creating fallback embedding model for evaluation...")
+            embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
             test_embeddings_np = np.asarray(
                 embedding_model.encode(sampled_test_texts, show_progress_bar=False)
             )
-        else:
-            print("Warning: Could not access embedding model for evaluation.")
-            return metrics
 
-        topic_assignments_test_np = np.asarray(topic_assignments_test)
-        valid_indices = topic_assignments_test_np != -1
-        num_valid_points = np.sum(valid_indices)
-        num_unique_labels = len(np.unique(topic_assignments_test_np[valid_indices]))
+        if test_embeddings_np is not None:
+            topic_assignments_test_np = np.asarray(topic_assignments_test)
+            valid_indices = topic_assignments_test_np != -1
+            num_valid_points = np.sum(valid_indices)
+            num_unique_labels = len(np.unique(topic_assignments_test_np[valid_indices]))
 
-        if num_valid_points > 1 and num_unique_labels > 1:
-            try:
-                metrics[f"{prefix}silhouette_score"] = silhouette_score(
-                    test_embeddings_np[valid_indices],
-                    topic_assignments_test_np[valid_indices],
+            if num_valid_points > 1 and num_unique_labels > 1:
+                try:
+                    metrics[f"{prefix}silhouette_score"] = silhouette_score(
+                        test_embeddings_np[valid_indices],
+                        topic_assignments_test_np[valid_indices],
+                    )
+                except Exception as e:
+                    print(f"Silhouette score error: {e}")
+                try:
+                    metrics[f"{prefix}davies_bouldin_score"] = davies_bouldin_score(
+                        test_embeddings_np[valid_indices],
+                        topic_assignments_test_np[valid_indices],
+                    )
+                except Exception as e:
+                    print(f"Davies-Bouldin score error: {e}")
+            else:
+                print(
+                    "Skipping Silhouette/DB due to insufficient clusters/points after outlier removal."
                 )
-            except Exception as e:
-                print(f"Silhouette score error: {e}")
-            try:
-                metrics[f"{prefix}davies_bouldin_score"] = davies_bouldin_score(
-                    test_embeddings_np[valid_indices],
-                    topic_assignments_test_np[valid_indices],
-                )
-            except Exception as e:
-                print(f"Davies-Bouldin score error: {e}")
         else:
-            print("Skipping Silhouette/DB due to insufficient clusters/points after outlier removal.")
+            print("Warning: Could not generate embeddings for evaluation.")
+
     except Exception as e:
         print(f"Error during BERTopic evaluation: {e}")
 
@@ -920,38 +839,35 @@ def get_terms_by_quality_tier(df_terms, tier='all'):
         return df_terms
 
 def save_results_tiered(df_weeb, df_furry, output_dir="output/terms-analysis-bertopic"):
-    """Save results with quality tiers"""
+    """Save all terms to a single CSV file per subculture (no tiers)"""
     print("Saving results to files...")
     os.makedirs(output_dir, exist_ok=True)
-    
+
     columns = [
         "term", "specificity", "similarity", "contextual_relevance",
         "seed_closeness", "subculture_relevance", "uniqueness",
         "combined_score"
     ]
-    
+
     for df, name in [(df_weeb, "weeb"), (df_furry, "furry")]:
         if df is None or df.empty:
             continue
-        
+
+        # Validate and clean the dataframe
+        df = validate_dataframe_for_csv(df)
+
+        if df.empty:
+            print(f"Warning: No valid terms remaining for {name} after validation")
+            continue
+
         # Ensure all columns exist
         for col in columns:
             if col not in df.columns:
                 df[col] = 0.0
-            
-        # Save all terms
-        df.to_csv(os.path.join(output_dir, f"{name}_terms_all.csv"), index=False)
-        
-        # Save by quality tiers
-        high_quality = get_terms_by_quality_tier(df, 'high')
-        medium_quality = get_terms_by_quality_tier(df, 'medium')
-        
-        if not high_quality.empty:
-            high_quality.to_csv(os.path.join(output_dir, f"{name}_terms_high_quality.csv"), index=False)
-        if not medium_quality.empty:
-            medium_quality.to_csv(os.path.join(output_dir, f"{name}_terms_medium_quality.csv"), index=False)
-        
-        print(f"Saved {name} terms - All: {len(df)}, High: {len(high_quality)}, Medium: {len(medium_quality)}")
+
+        # Save all terms to a single CSV file
+        df.to_csv(os.path.join(output_dir, f"{name}_terms_bertopic.csv"), index=False)
+        print(f"Saved {name} terms - All: {len(df)}")
 
 def save_metrics(metrics, metrics_output_dir="metrics/terms-analysis-bertopic"):
     print("Saving metrics to file...")
@@ -1469,11 +1385,11 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
                 print(f"Error calculating clustering metrics: {e}")
 
     save_results_tiered(
-        df_weeb, df_furry, output_dir="output/terms-analysis-bertopic-comprehensive"
+        df_weeb, df_furry, output_dir="output/terms-analysis-bertopic"
     )
     save_metrics(
         bertopic_metrics,
-        metrics_output_dir="metrics/terms-analysis-bertopic-comprehensive",
+        metrics_output_dir="metrics/terms-analysis-bertopic",
     )
 
     return df_weeb, df_furry, bertopic_metrics
