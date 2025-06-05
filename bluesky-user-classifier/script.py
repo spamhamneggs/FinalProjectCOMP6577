@@ -41,7 +41,7 @@ def normalize_text(s: str) -> str:
     """
     Normalize text by collapsing repeated characters and whitespace.
     """
-    s = re.sub(r'(.)\1{2,}', r'\1\1', s)  # Collapse repeated chars: “soooo” → “soo”
+    s = re.sub(r'(.)\1{2,}', r'\1\1', s)  # Collapse repeated chars: "soooo" → "soo"
     s = re.sub(r'\s+', ' ', s)  # Collapse whitespace
     return s.strip()
 
@@ -84,7 +84,6 @@ def calculate_category_score(text_content: str, terms_df: pd.DataFrame) -> float
     )
 
 
-
 def determine_labels_from_scores_and_cutoffs(
     w_score: float,
     f_score: float,
@@ -95,7 +94,7 @@ def determine_labels_from_scores_and_cutoffs(
 ) -> Tuple[str, str]:
     """
     Determine primary and secondary classification labels based on weeb and furry scores,
-    using category-specific cutoff scores.
+    using fixed absolute cutoff scores.
     """
     # Step 1: Determine the strength category for Weeb score
     weeb_strength_category = "Normie"
@@ -175,7 +174,7 @@ def determine_labels_from_scores_and_cutoffs(
 def process_post_for_training(args) -> Dict[str, Any] | None:
     """
     Process a single post for training data generation.
-    Now includes cardinal scores in the prompt for the model to learn from.
+    Uses fixed absolute cutoffs and includes cardinal scores in the prompt.
     """
     (
         text,
@@ -240,11 +239,11 @@ class BlueskyClassifier:
         self,
         model_name="unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
         batch_size=8,
-        # Four distinct percentile values for category-specific cutoffs
-        weeb_normie_p=60,
-        weeb_strong_p=85,
-        furry_normie_p=60,
-        furry_strong_p=85,
+        # Fixed absolute score cutoffs
+        weeb_normie_cutoff=0.01,
+        weeb_strong_cutoff=0.05,
+        furry_normie_cutoff=0.015,
+        furry_strong_cutoff=0.06,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {self.device}")
@@ -255,18 +254,18 @@ class BlueskyClassifier:
         self.tokenizer = None
         self.chunk_size = 100000
 
-        # Store the four distinct percentile configurations
-        self.weeb_normie_percentile = weeb_normie_p
-        self.weeb_strong_percentile = weeb_strong_p
-        self.furry_normie_percentile = furry_normie_p
-        self.furry_strong_percentile = furry_strong_p
+        # Fixed absolute cutoff scores
+        self.weeb_normie_cutoff_score_ = weeb_normie_cutoff
+        self.weeb_strong_cutoff_score_ = weeb_strong_cutoff
+        self.furry_normie_cutoff_score_ = furry_normie_cutoff
+        self.furry_strong_cutoff_score_ = furry_strong_cutoff
 
-        # Attributes to store calculated category-specific cutoff scores
-        self.weeb_normie_cutoff_score_ = 0.0
-        self.weeb_strong_cutoff_score_ = 0.0
-        self.furry_normie_cutoff_score_ = 0.0
-        self.furry_strong_cutoff_score_ = 0.0
-        self.percentile_cutoffs_calculated_ = False
+        print(f"\n--- Using Fixed Absolute Score Cutoffs ---")
+        print(f"  Weeb Normie Cutoff: {self.weeb_normie_cutoff_score_:.6f}")
+        print(f"  Weeb Strong Cutoff: {self.weeb_strong_cutoff_score_:.6f}")
+        print(f"  Furry Normie Cutoff: {self.furry_normie_cutoff_score_:.6f}")
+        print(f"  Furry Strong Cutoff: {self.furry_strong_cutoff_score_:.6f}")
+        print("-------------------------------------------\n")
 
         self.defined_combined_labels = sorted(
             [
@@ -339,92 +338,6 @@ class BlueskyClassifier:
     ) -> float:
         return calculate_category_score(text_content, terms_df)
 
-    def _determine_heuristic_labels_with_cutoffs(
-        self, w_score: float, f_score: float
-    ) -> Tuple[str, str]:
-        if not self.percentile_cutoffs_calculated_:
-            print(
-                "Critical Warning: Heuristic cutoffs attempted to be used before calculation!"
-            )
-        return determine_labels_from_scores_and_cutoffs(
-            w_score,
-            f_score,
-            self.weeb_normie_cutoff_score_,
-            self.weeb_strong_cutoff_score_,
-            self.furry_normie_cutoff_score_,
-            self.furry_strong_cutoff_score_,
-        )
-
-    def _calculate_and_set_percentile_cutoffs(self, all_posts_texts: List[str]):
-        print("Performing pass to calculate scores for percentile cutoffs...")
-        if not all_posts_texts:
-            print(
-                "Warning: No posts provided to calculate percentile cutoffs. Cutoffs will remain at their defaults (0.0)."
-            )
-            self.weeb_normie_cutoff_score_, self.weeb_strong_cutoff_score_ = 0.0, 0.0
-            self.furry_normie_cutoff_score_, self.furry_strong_cutoff_score_ = 0.0, 0.0
-            self.percentile_cutoffs_calculated_ = True
-            return
-
-        all_w_scores = []
-        all_f_scores = []
-        for text in tqdm(all_posts_texts, desc="Calculating scores for cutoffs", mininterval=10.0):
-            if isinstance(text, str) and text.strip():
-                all_w_scores.append(
-                    self._calculate_category_score(text, self.weeb_terms)
-                )
-                all_f_scores.append(
-                    self._calculate_category_score(text, self.furry_terms)
-                )
-
-        if all_w_scores:
-            self.weeb_normie_cutoff_score_ = np.percentile(
-                all_w_scores, self.weeb_normie_percentile
-            )
-            self.weeb_strong_cutoff_score_ = np.percentile(
-                all_w_scores, self.weeb_strong_percentile
-            )
-            if self.weeb_strong_cutoff_score_ < self.weeb_normie_cutoff_score_:
-                self.weeb_strong_cutoff_score_ = self.weeb_normie_cutoff_score_
-        else:
-            print(
-                "Warning: No weeb scores generated during cutoff calculation. Weeb cutoffs set to 0.0."
-            )
-            self.weeb_normie_cutoff_score_, self.weeb_strong_cutoff_score_ = 0.0, 0.0
-
-        if all_f_scores:
-            self.furry_normie_cutoff_score_ = np.percentile(
-                all_f_scores, self.furry_normie_percentile
-            )
-            self.furry_strong_cutoff_score_ = np.percentile(
-                all_f_scores, self.furry_strong_percentile
-            )
-            if self.furry_strong_cutoff_score_ < self.furry_normie_cutoff_score_:
-                self.furry_strong_cutoff_score_ = self.furry_normie_cutoff_score_
-        else:
-            print(
-                "Warning: No furry scores generated during cutoff calculation. Furry cutoffs set to 0.0."
-            )
-            self.furry_normie_cutoff_score_, self.furry_strong_cutoff_score_ = 0.0, 0.0
-
-        self.percentile_cutoffs_calculated_ = True
-        print("\n--- Calculated Category-Specific Percentile Cutoff Scores ---")
-        print(
-            f"  Weeb Normie Cutoff (P{self.weeb_normie_percentile}): {self.weeb_normie_cutoff_score_:.6f}"
-        )
-        print(
-            f"  Weeb Strong Cutoff (P{self.weeb_strong_percentile}): {self.weeb_strong_cutoff_score_:.6f}"
-        )
-        print(
-            f"  Furry Normie Cutoff (P{self.furry_normie_percentile}): {self.furry_normie_cutoff_score_:.6f}"
-        )
-        print(
-            f"  Furry Strong Cutoff (P{self.furry_strong_percentile}): {self.furry_strong_cutoff_score_:.6f}"
-        )
-        print(
-            "----------------------------------------------------------------------\n"
-        )
-
     def setup_model(self, model_name_or_path: str | None = None):
         load_path = model_name_or_path if model_name_or_path else self.model_name
         print(f"Loading model from: {load_path}")
@@ -435,7 +348,6 @@ class BlueskyClassifier:
                 max_seq_length=2048,
                 dtype=None,
                 load_in_4bit=True,
-                # Set padding_side='left' at initialization if supported
             )
 
             # Make sure padding is left and pad tokens are set
@@ -483,36 +395,9 @@ class BlueskyClassifier:
         if not os.path.exists(data_csv_path):
             raise FileNotFoundError(f"Data file {data_csv_path} not found")
 
-        all_post_texts_for_cutoffs = []
-        print("Pre-pass: Reading all texts from CSV to determine percentile cutoffs...")
-        try:
-            for chunk_df_prepass in pd.read_csv(
-                data_csv_path,
-                chunksize=self.chunk_size,
-                usecols=["type", "text"],
-                on_bad_lines="warn",
-            ):
-                chunk_df_prepass = chunk_df_prepass[chunk_df_prepass["type"] == "post"]
-                chunk_df_prepass = chunk_df_prepass.dropna(subset=["text"])
-                chunk_df_prepass["text"] = chunk_df_prepass["text"].astype(
-                    str, errors="ignore"
-                )
-                all_post_texts_for_cutoffs.extend(
-                    [
-                        text
-                        for text in chunk_df_prepass["text"]
-                        if isinstance(text, str) and text.strip()
-                    ]
-                )
-        except Exception as e:
-            print(f"Error during pre-pass CSV reading for {data_csv_path}: {e}")
-
-        self._calculate_and_set_percentile_cutoffs(all_post_texts_for_cutoffs)
-        del all_post_texts_for_cutoffs
-
         all_prepared_data = []
         num_processes = min(max(1, cpu_count() // 2), 4)
-        print(f"Main pass: Processing posts using {num_processes} processes...")
+        print(f"Processing posts using {num_processes} processes...")
         try:
             for chunk_df in tqdm(
                 pd.read_csv(
@@ -827,7 +712,7 @@ class BlueskyClassifier:
             save_total_limit=2,
             remove_unused_columns=True,
             report_to="none",
-            max_seq_length=256,
+            max_seq_length=384,
             packing=True,
             optim="adamw_bnb_8bit",
             fp16=torch.cuda.is_available()
@@ -939,15 +824,17 @@ class BlueskyClassifier:
             return []
 
     def classify_user(self, posts: List[str]) -> Dict[str, Any]:
+        """
+        LLM-only classification using all available posts.
+        Defaults to "Normie-None" if final classification is "Unknown-Unknown".
+        """
         if not posts:
             return {
-                "primary_classification": "Unknown (No Posts)",
+                "primary_classification": "Normie",
                 "secondary_classification": "None",
-                "weeb_score": 0.0,
-                "furry_score": 0.0,
-                "normie_score": 1.0,
                 "model_combined_labels_debug": [],
             }
+        
         if self.model is None or self.tokenizer is None:
             print(
                 f"Warning: Model not explicitly loaded for classify_user. Attempting to load from self.model_name: {self.model_name}."
@@ -961,24 +848,13 @@ class BlueskyClassifier:
 
         self.model.to(self.device)
         safe_posts = [str(p) if not isinstance(p, str) else p for p in posts]
-        self._calculate_and_set_percentile_cutoffs(safe_posts)
-        combined_text_for_heuristic = " ".join(safe_posts).lower()
-        heuristic_weeb_score = self._calculate_category_score(
-            combined_text_for_heuristic, self.weeb_terms
-        )
-        heuristic_furry_score = self._calculate_category_score(
-            combined_text_for_heuristic, self.furry_terms
-        )
-        h_primary, h_secondary = self._determine_heuristic_labels_with_cutoffs(
-            heuristic_weeb_score, heuristic_furry_score
-        )
-
-        model_predicted_combined_labels = []
-        posts_for_model = [p for p in safe_posts if p.strip()][
-            : min(10, len(safe_posts))
-        ]
         
-        # Modified to include scores in prompts for model inference
+        # Use ALL posts (no limit of 10)
+        posts_for_model = [p for p in safe_posts if p.strip()]
+        
+        model_predicted_combined_labels = []
+        
+        # Generate prompts with scores for ALL posts
         prompts_for_model = []
         for post_text in posts_for_model:
             # Calculate individual post scores for the model
@@ -1001,7 +877,7 @@ class BlueskyClassifier:
             num_model_batches = math.ceil(len(prompts_for_model) / self.batch_size)
             for batch_idx in tqdm(
                 range(num_model_batches),
-                desc="Classifying user posts with model",
+                desc=f"Classifying {len(posts_for_model)} user posts with LLM",
                 leave=False,
                 mininterval=5.0,
             ):
@@ -1036,41 +912,42 @@ class BlueskyClassifier:
                     predicted_combined = self._parse_combined_label_from_text(
                         model_response_part, "model output for user classification"
                     )
-                    if "Unknown" not in predicted_combined:
-                        model_predicted_combined_labels.append(predicted_combined)
+                    model_predicted_combined_labels.append(predicted_combined)
 
-        final_primary_classification, final_secondary_classification = (
-            h_primary,
-            h_secondary,
-        )
+        # Determine final classification from LLM predictions only
+        final_primary_classification = "Normie"
+        final_secondary_classification = "None"
+        
         if model_predicted_combined_labels:
-            most_common_combined = max(
-                set(model_predicted_combined_labels),
-                key=model_predicted_combined_labels.count,
-            )
-            if "-" in most_common_combined:
-                parsed_labels = most_common_combined.split("-", 1)
-                if len(parsed_labels) == 2:
-                    final_primary_classification, final_secondary_classification = (
-                        parsed_labels
-                    )
+            # Filter out "Unknown-Unknown" predictions for determining the final label
+            valid_predictions = [
+                label for label in model_predicted_combined_labels 
+                if label != "Unknown-Unknown"
+            ]
+            
+            if valid_predictions:
+                # Use the most common valid prediction
+                most_common_combined = max(
+                    set(valid_predictions),
+                    key=valid_predictions.count,
+                )
+                if "-" in most_common_combined:
+                    parsed_labels = most_common_combined.split("-", 1)
+                    if len(parsed_labels) == 2:
+                        final_primary_classification, final_secondary_classification = (
+                            parsed_labels
+                        )
+                    else:
+                        final_primary_classification = parsed_labels[0]
+                        final_secondary_classification = "None"
                 else:
-                    final_primary_classification = parsed_labels[0]
+                    final_primary_classification = most_common_combined
                     final_secondary_classification = "None"
-            else:
-                final_primary_classification = most_common_combined
-                final_secondary_classification = "None"
-
-        normie_score_val = max(
-            0.0, 1.0 - max(heuristic_weeb_score, heuristic_furry_score)
-        )
+            # If all predictions were "Unknown-Unknown", keep default "Normie-None"
 
         return {
             "primary_classification": final_primary_classification,
             "secondary_classification": final_secondary_classification,
-            "weeb_score": round(float(heuristic_weeb_score), 4),
-            "furry_score": round(float(heuristic_furry_score), 4),
-            "normie_score": round(normie_score_val, 4),
             "model_combined_labels_debug": model_predicted_combined_labels,
         }
 
@@ -1112,7 +989,7 @@ class BlueskyUserDataset:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bluesky User Classifier with Heuristics, Fine-tuning, Evaluation, and Classification"
+        description="Bluesky User Classifier with Fixed Cutoffs and LLM-only Classification"
     )
     subparsers = parser.add_subparsers(
         dest="command", help="Command to run", required=True
@@ -1124,7 +1001,6 @@ def main():
     preprocess_parser.add_argument("--input", required=True, help="Input CSV file")
     preprocess_parser.add_argument("--output", required=True, help="Output CSV file")
 
-    # Define arguments for each command that needs percentiles
     # Finetune command
     finetune_parser = subparsers.add_parser(
         "finetune", help="Fine-tune the language model"
@@ -1162,38 +1038,30 @@ def main():
     finetune_parser.add_argument(
         "--chunk_size_csv", type=int, default=50000, help="Chunk size for CSV reading"
     )
-    # Add distinct percentile arguments for finetune
+    # Fixed cutoff arguments
     finetune_parser.add_argument(
-        "--weeb-normie-percentile",
-        type=int,
-        default=60,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Weeb 'Normie' cutoff (default: 60)",
+        "--weeb-normie-cutoff",
+        type=float,
+        default=0.01,
+        help="Fixed absolute cutoff for Weeb 'Normie' classification (default: 0.01)",
     )
     finetune_parser.add_argument(
-        "--weeb-strong-percentile",
-        type=int,
-        default=85,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Weeb 'Strong' cutoff (default: 85)",
+        "--weeb-strong-cutoff",
+        type=float,
+        default=0.05,
+        help="Fixed absolute cutoff for Weeb 'Strong' classification (default: 0.05)",
     )
     finetune_parser.add_argument(
-        "--furry-normie-percentile",
-        type=int,
-        default=60,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Furry 'Normie' cutoff (default: 60)",
+        "--furry-normie-cutoff",
+        type=float,
+        default=0.015,
+        help="Fixed absolute cutoff for Furry 'Normie' classification (default: 0.015)",
     )
     finetune_parser.add_argument(
-        "--furry-strong-percentile",
-        type=int,
-        default=85,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Furry 'Strong' cutoff (default: 85)",
+        "--furry-strong-cutoff",
+        type=float,
+        default=0.06,
+        help="Fixed absolute cutoff for Furry 'Strong' classification (default: 0.06)",
     )
 
     # Evaluate command
@@ -1215,38 +1083,30 @@ def main():
     evaluate_parser.add_argument(
         "--chunk_size_csv", type=int, default=50000, help="Chunk size for CSV reading"
     )
-    # Add distinct percentile arguments for evaluate
+    # Fixed cutoff arguments for evaluation
     evaluate_parser.add_argument(
-        "--weeb-normie-percentile",
-        type=int,
-        default=70,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Weeb 'Normie' cutoff (default: 70)",
+        "--weeb-normie-cutoff",
+        type=float,
+        default=0.01,
+        help="Fixed absolute cutoff for Weeb 'Normie' classification (default: 0.01)",
     )
     evaluate_parser.add_argument(
-        "--weeb-strong-percentile",
-        type=int,
-        default=85,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Weeb 'Strong' cutoff (default: 85)",
+        "--weeb-strong-cutoff",
+        type=float,
+        default=0.05,
+        help="Fixed absolute cutoff for Weeb 'Strong' classification (default: 0.05)",
     )
     evaluate_parser.add_argument(
-        "--furry-normie-percentile",
-        type=int,
-        default=70,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Furry 'Normie' cutoff (default: 70)",
+        "--furry-normie-cutoff",
+        type=float,
+        default=0.015,
+        help="Fixed absolute cutoff for Furry 'Normie' classification (default: 0.015)",
     )
     evaluate_parser.add_argument(
-        "--furry-strong-percentile",
-        type=int,
-        default=85,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Furry 'Strong' cutoff (default: 85)",
+        "--furry-strong-cutoff",
+        type=float,
+        default=0.06,
+        help="Fixed absolute cutoff for Furry 'Strong' classification (default: 0.06)",
     )
 
     # Classify command
@@ -1270,77 +1130,41 @@ def main():
     classify_parser.add_argument(
         "--batch_size", type=int, default=8, help="Model classification batch size"
     )
-    # Add distinct percentile arguments for classify
-    classify_parser.add_argument(
-        "--weeb-normie-percentile",
-        type=int,
-        default=70,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Weeb 'Normie' cutoff (default: 60)",
-    )
-    classify_parser.add_argument(
-        "--weeb-strong-percentile",
-        type=int,
-        default=85,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Weeb 'Strong' cutoff (default: 85)",
-    )
-    classify_parser.add_argument(
-        "--furry-normie-percentile",
-        type=int,
-        default=70,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Furry 'Normie' cutoff (default: 60)",
-    )
-    classify_parser.add_argument(
-        "--furry-strong-percentile",
-        type=int,
-        default=85,
-        choices=range(0, 101),
-        metavar="[0-100]",
-        help="Percentile for Furry 'Strong' cutoff (default: 85)",
-    )
 
     args = parser.parse_args()
 
-    # Validate percentiles: strong >= normie for each category if they exist on args
-    if (
-        hasattr(args, "weeb_strong_percentile")
-        and hasattr(args, "weeb_normie_percentile")
-        and args.weeb_strong_percentile < args.weeb_normie_percentile
-    ):
-        parser.error(
-            "--weeb-strong-percentile cannot be less than --weeb-normie-percentile"
-        )
-    if (
-        hasattr(args, "furry_strong_percentile")
-        and hasattr(args, "furry_normie_percentile")
-        and args.furry_strong_percentile < args.furry_normie_percentile
-    ):
-        parser.error(
-            "--furry-strong-percentile cannot be less than --furry-normie-percentile"
-        )
+    # Validate cutoffs: strong >= normie for each category
+    if args.command in ["finetune", "evaluate"]:
+        if args.weeb_strong_cutoff < args.weeb_normie_cutoff:
+            parser.error(
+                "--weeb-strong-cutoff cannot be less than --weeb-normie-cutoff"
+            )
+        if args.furry_strong_cutoff < args.furry_normie_cutoff:
+            parser.error(
+                "--furry-strong-cutoff cannot be less than --furry-normie-cutoff"
+            )
 
     if args.command == "preprocess":
         BlueskyUserDataset.preprocess_and_save(args.input, args.output)
 
     elif args.command in ["finetune", "evaluate", "classify"]:
-        # Initialize classifier with model_name and batch_size.
-        # Percentiles are now distinct for each command and will be passed to BlueskyClassifier.
+        # Initialize classifier with model_name and batch_size
         classifier_kwargs = {
             "model_name": args.model_path
             if args.command != "finetune"
             else args.base_model_name,
             "batch_size": args.batch_size,
-            # Pass the four distinct percentile arguments
-            "weeb_normie_p": args.weeb_normie_percentile,
-            "weeb_strong_p": args.weeb_strong_percentile,
-            "furry_normie_p": args.furry_normie_percentile,
-            "furry_strong_p": args.furry_strong_percentile,
         }
+        
+        # Add cutoff arguments for finetune and evaluate commands
+        if args.command in ["finetune", "evaluate"]:
+            classifier_kwargs.update({
+                "weeb_normie_cutoff": args.weeb_normie_cutoff,
+                "weeb_strong_cutoff": args.weeb_strong_cutoff,
+                "furry_normie_cutoff": args.furry_normie_cutoff,
+                "furry_strong_cutoff": args.furry_strong_cutoff,
+            })
+        
         classifier = BlueskyClassifier(**classifier_kwargs)
 
         if hasattr(args, "chunk_size_csv") and args.chunk_size_csv is not None:
@@ -1396,11 +1220,8 @@ def main():
                 posts = await classifier.fetch_user_posts(args.username)
                 if not posts:
                     result = {
-                        "primary_classification": "Unknown (No Posts)",
+                        "primary_classification": "Normie",
                         "secondary_classification": "None",
-                        "weeb_score": 0.0,
-                        "furry_score": 0.0,
-                        "normie_score": 1.0,
                         "model_combined_labels_debug": [],
                     }
                 else:
@@ -1408,18 +1229,22 @@ def main():
                 print(
                     "\n"
                     + "=" * 50
-                    + f"\nClassification Results for @{args.username}\n"
+                    + f"\nLLM-Only Classification Results for @{args.username}\n"
                     + "=" * 50
                 )
                 print(f"Primary Classification: {result['primary_classification']}")
                 print(f"Secondary Classification: {result['secondary_classification']}")
-                print(f"  Heuristic Weeb Score: {result['weeb_score']:.4f}")
-                print(f"  Heuristic Furry Score: {result['furry_score']:.4f}")
-                print(f"  Heuristic Normie Score: {result['normie_score']:.4f}")
                 if result.get("model_combined_labels_debug"):
                     print(
-                        f"  Model Post Classifications (sample): {result['model_combined_labels_debug']}"
+                        f"Model Post Classifications: {len(result['model_combined_labels_debug'])} posts analyzed"
                     )
+                    # Show distribution of predictions
+                    from collections import Counter
+                    pred_counts = Counter(result['model_combined_labels_debug'])
+                    print("Prediction distribution:")
+                    for pred, count in pred_counts.most_common():
+                        percentage = (count / len(result['model_combined_labels_debug'])) * 100
+                        print(f"  {pred}: {count} ({percentage:.1f}%)")
                 print("=" * 50 + "\n")
 
             asyncio.run(run_classification())
