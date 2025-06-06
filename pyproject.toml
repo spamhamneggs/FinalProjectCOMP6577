@@ -10,11 +10,11 @@ members = [
  "subculture-terms-analyzer",
  "dataset-scripts",
  "bluesky-user-classifier",
- "terms-analysis-bertopic",
+ "terms-analyzer-bertopic",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.11.11",
+    "ruff>=0.11.13",
     "vulture>=2.14",
 ]

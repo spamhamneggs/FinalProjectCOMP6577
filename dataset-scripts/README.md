@@ -1,24 +1,96 @@
-# Dataset Filter Script
+# Bluesky Dataset Filtering and Sampling Tools
 
-This script loads the `Roronotalt/bluesky-ten-million` dataset from Hugging Face, filters it to include only English language posts, and saves the filtered data to a CSV file.
+This project provides a set of Python scripts to download, filter, and sample the large `Roronotalt/bluesky-ten-million` dataset from Hugging Face. The primary goal is to prepare a clean, manageable subset of data for further analysis or for training machine learning models.
 
-## Description
+The workflow is composed of two main scripts:
 
-The script performs the following main operations:
+1. **`dataset_filter.py`**: Downloads the entire 10-million post dataset, filters it to retain only English-language posts, and saves the result to a large CSV file.
+2. **`csv_slicer.py`**: A utility script to extract a specified number of random rows from a large CSV file, allowing you to create smaller, more manageable samples for development and testing.
 
-1. **Loads Data**: It fetches a specified dataset from Hugging Face. By default, it uses the "Roronotalt/bluesky-ten-million" dataset.
-2. **Filters Data**: It converts the dataset into a pandas DataFrame and filters out entries that are not in English.
-3. **Saves Data**: The resulting DataFrame, containing only English posts, is saved as a CSV file.
+## Features
 
-## Functionality
+- **Efficient Data Loading**: Uses the `datasets` library to stream and process data from the Hugging Face Hub.
+- **Language Filtering**: Isolates English-language posts from the multilingual dataset.
+- **Random Sampling**: Provides a simple command-line interface to create random subsets of any CSV file.
+- **Organized Output**: Automatically creates an `output` directory to store the generated datasets.
 
-- **Directory Setup**: Creates `output` and `temp` directories if they don't already exist. The filtered dataset will be saved within the `output/dataset-filter` directory.
-- **Logging**: Implements basic logging to track the script's progress and any potential issues.
-- **Data Processing**:
-  - Uses the `datasets` library to load data.
-  - Uses the `pandas` library for data manipulation and filtering.
-  - Specifically filters posts where the 'langs' field contains 'en'.
+## Recommended Workflow
 
-## Output
+1. Run `dataset_filter.py` first. This is a one-time, long-running process that will download and filter the entire dataset, producing a large CSV file (`bluesky_ten_million_english_only.csv`).
+2. Run `csv_slicer.py` on the output from the first step. Use this script to create smaller, randomly sampled CSV files (e.g., 100,000 posts) for faster iteration during development or analysis.
 
-The script generates a CSV file named `bluesky_ten_million_english_only.csv` located in the `./output/dataset-filter/` directory relative to the script's parent directory. This file contains the posts from the original dataset that were identified as being in English.
+## Installation
+
+This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management.
+
+1. **Clone the repository:**
+
+    ```bash
+    git clone <your-repo-url>
+    cd <your-repo-directory>
+    ```
+
+2. **Create a virtual environment and sync dependencies:**
+    `uv sync` will create the virtual environment (if it doesn't exist) and install the exact dependencies listed in `pyproject.toml`.
+
+    ```bash
+    uv sync
+    ```
+
+## Usage
+
+To run scripts, use the `uv run` command, which executes commands within the managed virtual environment.
+
+### 1. Filtering the Full Dataset (`dataset_filter.py`)
+
+This script fetches the `Roronotalt/bluesky-ten-million` dataset, keeps only English posts, and saves the result.
+
+**To run the script:**
+
+```bash
+uv run path/to/dataset_filter.py
+```
+
+- **Input**: None (dataset name is hardcoded).
+- **Output**: A CSV file named `bluesky_ten_million_english_only.csv` will be created in the `./output/dataset-filter/` directory.
+
+The script will log its progress to the console, indicating when it's loading, filtering, and saving the data.
+
+### 2. Creating a Random Sample (`csv_slicer.py`)
+
+After generating the large CSV of English posts, use this script to create a smaller, more manageable random sample. It's a general-purpose tool that can be used on any CSV.
+
+**To run the script:**
+
+```bash
+uv run path/to/csv_slicer.py <input_file> <output_file> <number_of_rows>
+```
+
+**Example:**
+To create a sample of 100,000 posts from the filtered dataset:
+
+```bash
+uv run path/to/csv_slicer.py \
+  ./output/dataset-filter/bluesky_ten_million_english_only.csv \
+  ./output/dataset-filter/sampled_100k_posts.csv \
+  100000
+```
+
+- **Arguments**:
+    1. `input_file`: Path to the large source CSV.
+    2. `output_file`: Path where the new, smaller CSV will be saved.
+    3. `n`: The number of random rows to sample.
+
+## Project Structure
+
+```txt
+.
+├── dataset_filter.py       # Script to download and filter the main dataset
+├── csv_slicer.py           # Script to sample N rows from a CSV
+├── output/
+│   └── dataset-filter/
+│       ├── bluesky_ten_million_english_only.csv  # Generated by dataset_filter.py
+│       └── sampled_100k_posts.csv              # Generated by csv_slicer.py
+├── pyproject.toml          # Project configuration and dependencies
+└── README.md               # This file
+```

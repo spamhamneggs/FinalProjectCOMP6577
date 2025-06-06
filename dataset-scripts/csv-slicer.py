@@ -1,6 +1,7 @@
 import pandas as pd
 import argparse  # For handling command-line arguments
 
+
 def extract_random_n_rows(input_csv_path: str, output_csv_path: str, n: int):
     """
     Reads n random rows from an input CSV file and writes them to an output CSV file.
@@ -29,12 +30,15 @@ def extract_random_n_rows(input_csv_path: str, output_csv_path: str, n: int):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Extract n random rows from a CSV file."
     )
     parser.add_argument("input_file", type=str, help="Path to the input CSV file.")
-    parser.add_argument("output_file", type=str, help="Path to save the output CSV file.")
+    parser.add_argument(
+        "output_file", type=str, help="Path to save the output CSV file."
+    )
     parser.add_argument("n", type=int, help="Number of random rows to sample.")
 
     args = parser.parse_args()

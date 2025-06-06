@@ -24,6 +24,7 @@ from sklearn.metrics import classification_report, confusion_matrix  # type: ign
 
 # For classification
 from dotenv import load_dotenv
+
 load_dotenv()
 
 RANDOM_SEED = 42
@@ -41,8 +42,8 @@ def normalize_text(s: str) -> str:
     """
     Normalize text by collapsing repeated characters and whitespace.
     """
-    s = re.sub(r'(.)\1{2,}', r'\1\1', s)  # Collapse repeated chars: "soooo" → "soo"
-    s = re.sub(r'\s+', ' ', s)  # Collapse whitespace
+    s = re.sub(r"(.)\1{2,}", r"\1\1", s)  # Collapse repeated chars: "soooo" → "soo"
+    s = re.sub(r"\s+", " ", s)  # Collapse whitespace
     return s.strip()
 
 
@@ -342,7 +343,6 @@ class BlueskyClassifier:
         load_path = model_name_or_path if model_name_or_path else self.model_name
         print(f"Loading model from: {load_path}")
         try:
-            # Ensure left padding is set at tokenizer initialization
             self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                 model_name=load_path,
                 max_seq_length=2048,
@@ -350,16 +350,19 @@ class BlueskyClassifier:
                 load_in_4bit=True,
             )
 
-            # Make sure padding is left and pad tokens are set
+            # Force left padding more aggressively
             self.tokenizer.padding_side = "left"
+            self.tokenizer.truncation_side = "left"  # Add this too
+
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
             if self.model.config.pad_token_id is None:
                 self.model.config.pad_token_id = self.model.config.eos_token_id
 
-            # Allow cuDNN to auto-tune the fastest kernels
-            torch.backends.cudnn.benchmark = True
+            # Force it again after config changes
+            self.tokenizer.padding_side = "left"
 
+            torch.backends.cudnn.benchmark = True
             print(f"Model loaded successfully from {load_path}.")
         except Exception as e:
             print(f"Error loading model {load_path}: {e}")
@@ -458,12 +461,12 @@ class BlueskyClassifier:
         primary, secondary = "Unknown", "Unknown"
         for line in text.splitlines():
             line_lower = line.lower()
-            if 'primary classification:' in line_lower:
-                lab = line.split(':',1)[1].strip().title()
+            if "primary classification:" in line_lower:
+                lab = line.split(":", 1)[1].strip().title()
                 if lab in self.primary_labels_set:
                     primary = lab
-            if 'secondary classification:' in line_lower:
-                lab = line.split(':',1)[1].strip().title()
+            if "secondary classification:" in line_lower:
+                lab = line.split(":", 1)[1].strip().title()
                 if lab in self.secondary_labels_set:
                     secondary = lab
         if primary != "Unknown" and secondary == "Unknown":
@@ -494,6 +497,9 @@ class BlueskyClassifier:
         self.model.to(self.device)
         num_batches = math.ceil(len(eval_data_subset) / self.batch_size)
 
+        # Force left padding right before tokenization
+        self.tokenizer.padding_side = "left"
+
         for batch_idx in tqdm(
             range(num_batches), desc="Evaluating model (batched)", mininterval=10.0
         ):
@@ -502,6 +508,8 @@ class BlueskyClassifier:
             ]
             prompts = [f"<|user|>\n{item['prompt']}\n<|assistant|>" for item in batch]
             true_labels = [item["true_label_heuristic"] for item in batch]
+            # Force left padding right before tokenization
+            self.tokenizer.padding_side = "left"
             inputs = self.tokenizer(
                 prompts,
                 return_tensors="pt",
@@ -517,7 +525,9 @@ class BlueskyClassifier:
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                     do_sample=False,
-                    temperature=0.1,
+                    temperature=None,
+                    top_p=None,
+                    top_k=None,
                 )
             for i in range(len(batch)):
                 input_len = inputs.input_ids[i].shape[0]
@@ -591,10 +601,19 @@ class BlueskyClassifier:
         training_data_csv: str,
         output_dir: str = "finetuned_model",
         epochs: int = 3,
-        learning_rate: float = 2e-4,
+        learning_rate: float = 1e-5,
         eval_split_size: float = 0.20,
         skip_eval_after_train: bool = False,
+        max_training_samples: int = None,
+        test_size: int = None,
     ):
+        """
+        Fine-tune the model on custom data.
+
+        Args:
+            max_training_samples (int, optional): Maximum number of training samples to use
+            test_size (int, optional): Fixed size for test set instead of using ratio
+        """
         if self.model is None or self.tokenizer is None:
             try:
                 self.setup_model(self.model_name)
@@ -608,76 +627,87 @@ class BlueskyClassifier:
             print("No training data prepared. Skipping fine-tuning.")
             return None
 
-        labels_for_stratification = [
-            item["true_label_heuristic"] for item in all_prepared_data
-        ]
-        train_data_dicts, eval_data_dicts = [], []
-        if eval_split_size > 0 and len(all_prepared_data) > 1:
-            min_samples_per_class_for_split = 2
-            counts = pd.Series(labels_for_stratification).value_counts()
-            stratify_possible = (
-                all(counts >= min_samples_per_class_for_split) and len(counts) > 1
+        if (
+            max_training_samples
+            and test_size
+            and len(all_prepared_data) >= (max_training_samples + test_size)
+        ):
+            total_samples = max_training_samples + test_size
+            print(
+                f"Sampling exactly {max_training_samples} train and {test_size} eval examples from {len(all_prepared_data)} total examples"
             )
-            enough_samples_for_split = (
-                len(all_prepared_data) * (1 - eval_split_size) >= 1
-                and len(all_prepared_data) * eval_split_size >= 1
-            )
-            if stratify_possible and enough_samples_for_split:
-                train_data_dicts, eval_data_dicts = train_test_split(
-                    all_prepared_data,
-                    test_size=eval_split_size,
-                    random_state=RANDOM_SEED,
-                    stratify=labels_for_stratification,
-                )
-            else:
-                if not stratify_possible:
-                    print(
-                        "Warning: Stratification not possible. Splitting without stratification."
+            sampled_data = random.sample(all_prepared_data, total_samples)
+            # Optionally shuffle for randomness
+            random.shuffle(sampled_data)
+            train_data_dicts = sampled_data[:max_training_samples]
+            eval_data_dicts = sampled_data[max_training_samples:]
+            skip_eval_after_train = False
+        else:
+            labels_for_stratification = [
+                item["true_label_heuristic"] for item in all_prepared_data
+            ]
+
+            if len(all_prepared_data) > 1:
+                if test_size:
+                    train_data_dicts, eval_data_dicts = train_test_split(
+                        all_prepared_data,
+                        test_size=test_size,
+                        random_state=RANDOM_SEED,
+                        stratify=labels_for_stratification,
                     )
-                if not enough_samples_for_split:
-                    print(
-                        "Warning: Not enough samples for train/eval split. Adjusting."
-                    )
-                if enough_samples_for_split:
+                else:
                     train_data_dicts, eval_data_dicts = train_test_split(
                         all_prepared_data,
                         test_size=eval_split_size,
                         random_state=RANDOM_SEED,
+                        stratify=labels_for_stratification,
                     )
+            else:
+                # Fallback to proportional splitting
+                labels_for_stratification = [
+                    item["true_label_heuristic"] for item in all_prepared_data
+                ]
+
+                if len(all_prepared_data) > 1 and eval_split_size > 0:
+                    try:
+                        train_data_dicts, eval_data_dicts = train_test_split(
+                            all_prepared_data,
+                            test_size=eval_split_size,
+                            random_state=RANDOM_SEED,
+                            stratify=labels_for_stratification,
+                        )
+                    except ValueError:
+                        # Stratification failed, split without it
+                        train_data_dicts, eval_data_dicts = train_test_split(
+                            all_prepared_data,
+                            test_size=eval_split_size,
+                            random_state=RANDOM_SEED,
+                        )
                 else:
-                    print(
-                        "Warning: Not enough samples for train/eval split. Using all data for training."
-                    )
                     train_data_dicts = all_prepared_data
                     eval_data_dicts = []
                     skip_eval_after_train = True
-        else:
-            print(
-                "Eval split size is 0 or not enough data. Using all data for training."
-            )
-            train_data_dicts = all_prepared_data
-            eval_data_dicts = []
-            skip_eval_after_train = True
 
-        print(
-            f"Training with {len(train_data_dicts)} samples, evaluating with {len(eval_data_dicts)} samples (if eval not skipped)."
-        )
-        if not train_data_dicts:
             print(
-                "No training samples available after splitting. Aborting fine-tuning."
+                f"Training with {len(train_data_dicts)} samples, evaluating with {len(eval_data_dicts)} samples."
             )
-            return None
+
+            if not train_data_dicts:
+                print(
+                    "No training samples available after splitting. Aborting fine-tuning."
+                )
+                return None
 
         # Oversample using sample weights (WeightedRandomSampler logic, but in-memory)
-        label_counts = pd.Series([ex['true_label_heuristic'] for ex in train_data_dicts]).value_counts()
-        label_to_weight = {label: 1.0/count for label, count in label_counts.items()}
-        sample_weights = [label_to_weight[ex['true_label_heuristic']] for ex in train_data_dicts]
+        label_counts = pd.Series(
+            [ex["true_label_heuristic"] for ex in train_data_dicts]
+        ).value_counts()
+        label_to_weight = {label: 1.0 / count for label, count in label_counts.items()}
+        sample_weights = [
+            label_to_weight[ex["true_label_heuristic"]] for ex in train_data_dicts
+        ]
         n_samples = len(train_data_dicts)
-        indices = random.choices(
-            range(n_samples),
-            weights=sample_weights,
-            k=n_samples
-        )
+        indices = random.choices(range(n_samples), weights=sample_weights, k=n_samples)
         oversampled_train_data = [train_data_dicts[i] for i in indices]
 
         sft_train_dataset = Dataset.from_list(
@@ -695,25 +725,25 @@ class BlueskyClassifier:
             ]
 
         sft_config = SFTConfig(
+            completion_only_loss=False,
             output_dir=output_dir,
             num_train_epochs=epochs,
             per_device_train_batch_size=self.batch_size,
             gradient_accumulation_steps=2,
             learning_rate=learning_rate,
             weight_decay=0.01,
-            warmup_ratio=0.03,
+            warmup_ratio=0.1,
             lr_scheduler_type="cosine",
-            logging_steps=max(1, len(sft_train_dataset) // (self.batch_size * 10))
-            if sft_train_dataset and self.batch_size > 0
-            else 10,
+            max_grad_norm=0.3,
+            logging_steps=500,
             save_strategy="epoch",
             dataset_num_proc=1,
-            dataloader_num_workers=0,
-            save_total_limit=2,
+            dataloader_num_workers=4,
+            save_total_limit=1,
             remove_unused_columns=True,
             report_to="none",
-            max_seq_length=384,
-            packing=True,
+            max_seq_length=256,
+            packing=False,
             optim="adamw_bnb_8bit",
             fp16=torch.cuda.is_available()
             and not (
@@ -723,6 +753,8 @@ class BlueskyClassifier:
             bf16=torch.cuda.is_available()
             and hasattr(torch.cuda, "is_bf16_supported")
             and torch.cuda.is_bf16_supported(),
+            dataloader_pin_memory=False,  # add this
+            group_by_length=True,  # add this for efficiency
         )
         trainer = SFTTrainer(
             model=self.model,
@@ -834,7 +866,7 @@ class BlueskyClassifier:
                 "secondary_classification": "None",
                 "model_combined_labels_debug": [],
             }
-        
+
         if self.model is None or self.tokenizer is None:
             print(
                 f"Warning: Model not explicitly loaded for classify_user. Attempting to load from self.model_name: {self.model_name}."
@@ -848,19 +880,21 @@ class BlueskyClassifier:
 
         self.model.to(self.device)
         safe_posts = [str(p) if not isinstance(p, str) else p for p in posts]
-        
+
         # Use ALL posts (no limit of 10)
         posts_for_model = [p for p in safe_posts if p.strip()]
-        
+
         model_predicted_combined_labels = []
-        
+
         # Generate prompts with scores for ALL posts
         prompts_for_model = []
         for post_text in posts_for_model:
             # Calculate individual post scores for the model
             post_weeb_score = self._calculate_category_score(post_text, self.weeb_terms)
-            post_furry_score = self._calculate_category_score(post_text, self.furry_terms)
-            
+            post_furry_score = self._calculate_category_score(
+                post_text, self.furry_terms
+            )
+
             prompt = (
                 f"<|user|>\nAnalyze this Bluesky post using the provided scores and content. "
                 f"Respond ONLY with:\n"
@@ -887,6 +921,8 @@ class BlueskyClassifier:
                 max_input_length = (
                     getattr(self.tokenizer, "model_max_length", 2048) - 100
                 )
+                # Force left padding right before tokenization
+                self.tokenizer.padding_side = "left"
                 inputs = self.tokenizer(
                     batch_prompts,
                     return_tensors="pt",
@@ -902,7 +938,9 @@ class BlueskyClassifier:
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                         do_sample=False,
-                        temperature=0.1,
+                        temperature=None,
+                        top_p=None,
+                        top_k=None,
                     )
                 for i in range(len(batch_prompts)):
                     input_ids_length = inputs.input_ids[i].shape[0]
@@ -917,14 +955,15 @@ class BlueskyClassifier:
         # Determine final classification from LLM predictions only
         final_primary_classification = "Normie"
         final_secondary_classification = "None"
-        
+
         if model_predicted_combined_labels:
             # Filter out "Unknown-Unknown" predictions for determining the final label
             valid_predictions = [
-                label for label in model_predicted_combined_labels 
+                label
+                for label in model_predicted_combined_labels
                 if label != "Unknown-Unknown"
             ]
-            
+
             if valid_predictions:
                 # Use the most common valid prediction
                 most_common_combined = max(
@@ -1025,7 +1064,7 @@ def main():
         "--batch_size", type=int, default=8, help="Training batch size"
     )
     finetune_parser.add_argument(
-        "--learning_rate", type=float, default=2e-4, help="Learning rate"
+        "--learning_rate", type=float, default=1e-5, help="Learning rate"
     )
     finetune_parser.add_argument(
         "--eval_split_size", type=float, default=0.2, help="Validation split size"
@@ -1042,26 +1081,40 @@ def main():
     finetune_parser.add_argument(
         "--weeb-normie-cutoff",
         type=float,
-        default=0.01,
+        required=True,
         help="Fixed absolute cutoff for Weeb 'Normie' classification (default: 0.01)",
     )
     finetune_parser.add_argument(
         "--weeb-strong-cutoff",
         type=float,
-        default=0.05,
+        required=True,
         help="Fixed absolute cutoff for Weeb 'Strong' classification (default: 0.05)",
     )
     finetune_parser.add_argument(
         "--furry-normie-cutoff",
         type=float,
-        default=0.015,
+        required=True,
         help="Fixed absolute cutoff for Furry 'Normie' classification (default: 0.015)",
     )
     finetune_parser.add_argument(
         "--furry-strong-cutoff",
         type=float,
-        default=0.06,
+        required=True,
         help="Fixed absolute cutoff for Furry 'Strong' classification (default: 0.06)",
+    )
+
+    finetune_parser.add_argument(
+        "--max_training_samples",
+        type=int,
+        default=400000,
+        help="Maximum number of training samples to use (default: use 400,000)",
+    )
+
+    finetune_parser.add_argument(
+        "--test_size",
+        type=int,
+        default=10000,
+        help="Fixed size for test set instead of using ratio",
     )
 
     # Evaluate command
@@ -1155,16 +1208,18 @@ def main():
             else args.base_model_name,
             "batch_size": args.batch_size,
         }
-        
+
         # Add cutoff arguments for finetune and evaluate commands
         if args.command in ["finetune", "evaluate"]:
-            classifier_kwargs.update({
-                "weeb_normie_cutoff": args.weeb_normie_cutoff,
-                "weeb_strong_cutoff": args.weeb_strong_cutoff,
-                "furry_normie_cutoff": args.furry_normie_cutoff,
-                "furry_strong_cutoff": args.furry_strong_cutoff,
-            })
-        
+            classifier_kwargs.update(
+                {
+                    "weeb_normie_cutoff": args.weeb_normie_cutoff,
+                    "weeb_strong_cutoff": args.weeb_strong_cutoff,
+                    "furry_normie_cutoff": args.furry_normie_cutoff,
+                    "furry_strong_cutoff": args.furry_strong_cutoff,
+                }
+            )
+
         classifier = BlueskyClassifier(**classifier_kwargs)
 
         if hasattr(args, "chunk_size_csv") and args.chunk_size_csv is not None:
@@ -1178,6 +1233,8 @@ def main():
                 learning_rate=args.learning_rate,
                 eval_split_size=args.eval_split_size,
                 skip_eval_after_train=args.skip_eval_after_train,
+                max_training_samples=args.max_training_samples,
+                test_size=args.test_size,
             )
         elif args.command == "evaluate":
             try:
@@ -1240,10 +1297,13 @@ def main():
                     )
                     # Show distribution of predictions
                     from collections import Counter
-                    pred_counts = Counter(result['model_combined_labels_debug'])
+
+                    pred_counts = Counter(result["model_combined_labels_debug"])
                     print("Prediction distribution:")
                     for pred, count in pred_counts.most_common():
-                        percentage = (count / len(result['model_combined_labels_debug'])) * 100
+                        percentage = (
+                            count / len(result["model_combined_labels_debug"])
+                        ) * 100
                         print(f"  {pred}: {count} ({percentage:.1f}%)")
                 print("=" * 50 + "\n")
 
@@ -1268,4 +1328,5 @@ if __name__ == "__main__":
     except ImportError:
         print("Error: TRL library not found. Please install with 'pip install trl'.")
         sys.exit(1)
+
     main()

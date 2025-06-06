@@ -33,16 +33,54 @@ os.makedirs("metrics/terms-analysis-bertopic", exist_ok=True)
 
 # Define lists of known weeb and furry terms for initial seeding
 weeb_seed_terms = [
-    "anime", "manga", "otaku", "waifu", "kawaii", "isekai", "nani", "baka",
-    "cosplay", "senpai", "moe", "tsundere", "weeb", "weeaboo", "animu",
-    "sugoi", "desu", "chan", "kun", "sama", "yokai", "shounen", "shoujo",
+    "anime",
+    "manga",
+    "otaku",
+    "waifu",
+    "kawaii",
+    "isekai",
+    "nani",
+    "baka",
+    "cosplay",
+    "senpai",
+    "moe",
+    "tsundere",
+    "weeb",
+    "weeaboo",
+    "animu",
+    "sugoi",
+    "desu",
+    "chan",
+    "kun",
+    "sama",
+    "yokai",
+    "shounen",
+    "shoujo",
 ]
 
 furry_seed_terms = [
-    "furry", "fursona", "anthro", "floof", "fursuit", "paws", "uwu", "owo",
-    "furcon", "furries", "fursuits", "pawsome", "tailwag", "yiff", "murr",
-    "awoo", "feral", "anthropomorphic", "scalies", "protogen",
+    "furry",
+    "fursona",
+    "anthro",
+    "floof",
+    "fursuit",
+    "paws",
+    "uwu",
+    "owo",
+    "furcon",
+    "furries",
+    "fursuits",
+    "pawsome",
+    "tailwag",
+    "yiff",
+    "murr",
+    "awoo",
+    "feral",
+    "anthropomorphic",
+    "scalies",
+    "protogen",
 ]
+
 
 # --- Preprocessing and Utility Functions ---
 def load_data(file_path):
@@ -52,8 +90,10 @@ def load_data(file_path):
     df["original_index"] = df.index
     return df
 
+
 def get_term_docs(term_idx, X_tfidf_sparse):
     return set(X_tfidf_sparse.getcol(term_idx).nonzero()[0])
+
 
 def preprocess_text(text):
     if not isinstance(text, str):
@@ -63,6 +103,7 @@ def preprocess_text(text):
     text = re.sub(r"[^\w\s]", "", text)
     text = re.sub(r"\b\d+\b", "", text)
     return text
+
 
 def load_stop_words(file_path):
     stop_words = set()
@@ -79,7 +120,9 @@ def load_stop_words(file_path):
         print(f"Error loading stop words: {e}. Using empty set.")
     return stop_words
 
+
 STOP_WORDS = load_stop_words("./thirdparty/stopwords-custom.txt")
+
 
 def tokenize_text(text):
     if not isinstance(text, str):
@@ -87,6 +130,7 @@ def tokenize_text(text):
     tokens = word_tokenize(text)
     tokens = [token for token in tokens if token not in STOP_WORDS and len(token) > 1]
     return tokens
+
 
 def extract_tfidf_features(texts, max_features=5000, min_df=20, max_df=0.90):
     print("Extracting TF-IDF features (for metrics)...")
@@ -111,6 +155,7 @@ def extract_tfidf_features(texts, max_features=5000, min_df=20, max_df=0.90):
     print(f"Extracted {n_features} TF-IDF features from {n_samples} documents")
     return X_tfidf, vectorizer, feature_names_tfidf
 
+
 def clean_and_validate_term(term):
     """Clean and validate individual terms to ensure one term per row"""
     if not isinstance(term, str):
@@ -121,7 +166,7 @@ def clean_and_validate_term(term):
     words = term.split()
     if len(words) > 2:
         return None
-    if any(sep in term for sep in [',', ';', '|', '\t', '/', '\\', '_']):
+    if any(sep in term for sep in [",", ";", "|", "\t", "/", "\\", "_"]):
         return None
     if len(term) < 2:
         return None
@@ -132,6 +177,7 @@ def clean_and_validate_term(term):
     if term in STOP_WORDS:
         return None
     return term
+
 
 def extract_individual_terms_from_topic_terms(topic_terms, max_terms_per_topic=50):
     """Extract and clean individual terms from BERTopic topic terms"""
@@ -146,14 +192,22 @@ def extract_individual_terms_from_topic_terms(topic_terms, max_terms_per_topic=5
                 seen_terms.add(cleaned_term)
             elif len(words) == 2:
                 word1, word2 = words
-                if (len(word1) > 2 and len(word2) > 2 and 
-                    word1 not in STOP_WORDS and word2 not in STOP_WORDS):
+                if (
+                    len(word1) > 2
+                    and len(word2) > 2
+                    and word1 not in STOP_WORDS
+                    and word2 not in STOP_WORDS
+                ):
                     individual_terms.append((cleaned_term, score))
                     seen_terms.add(cleaned_term)
                     for word in words:
                         clean_word = clean_and_validate_term(word)
-                        if (clean_word and clean_word not in seen_terms and 
-                            len(clean_word) > 3 and clean_word not in STOP_WORDS):
+                        if (
+                            clean_word
+                            and clean_word not in seen_terms
+                            and len(clean_word) > 3
+                            and clean_word not in STOP_WORDS
+                        ):
                             individual_terms.append((clean_word, score * 0.7))
                             seen_terms.add(clean_word)
     term_scores = {}
@@ -164,17 +218,21 @@ def extract_individual_terms_from_topic_terms(topic_terms, max_terms_per_topic=5
     result.sort(key=lambda x: x[1], reverse=True)
     return result
 
+
 def validate_dataframe_for_csv(df):
     """Ensure dataframe is properly formatted for CSV output"""
     if df.empty:
         return df
-    if 'term' in df.columns:
-        df['term'] = df['term'].apply(lambda x: clean_and_validate_term(str(x)) if pd.notna(x) else None)
-        df = df.dropna(subset=['term'])
-        df = df[df['term'] != '']
-        df = df.sort_values('combined_score', ascending=False)
-        df = df.drop_duplicates(subset=['term'], keep='first')
+    if "term" in df.columns:
+        df["term"] = df["term"].apply(
+            lambda x: clean_and_validate_term(str(x)) if pd.notna(x) else None
+        )
+        df = df.dropna(subset=["term"])
+        df = df[df["term"] != ""]
+        df = df.sort_values("combined_score", ascending=False)
+        df = df.drop_duplicates(subset=["term"], keep="first")
     return df
+
 
 # --- Metric Calculation Functions ---
 def calculate_term_specificity(term_idx_tfidf, X_tfidf, seed_docs_indices_tfidf):
@@ -191,7 +249,10 @@ def calculate_term_specificity(term_idx_tfidf, X_tfidf, seed_docs_indices_tfidf)
     overall_concentration = len(term_docs_tfidf) / X_tfidf.shape[0]
     return seed_concentration / (overall_concentration + 1e-10)
 
-def calculate_seed_term_closeness(term_idx_tfidf, feature_names_dict_tfidf, X_tfidf, seed_terms):
+
+def calculate_seed_term_closeness(
+    term_idx_tfidf, feature_names_dict_tfidf, X_tfidf, seed_terms
+):
     seed_indices_tfidf = [
         feature_names_dict_tfidf[seed]
         for seed in seed_terms
@@ -208,7 +269,10 @@ def calculate_seed_term_closeness(term_idx_tfidf, feature_names_dict_tfidf, X_tf
         intersection = len(term_docs_tfidf.intersection(seed_docs_for_one_seed_term))
         union = len(term_docs_tfidf.union(seed_docs_for_one_seed_term))
         closeness_scores.append(intersection / union if union > 0 else 0)
-    return sum(closeness_scores) / len(seed_indices_tfidf) if seed_indices_tfidf else 0.0
+    return (
+        sum(closeness_scores) / len(seed_indices_tfidf) if seed_indices_tfidf else 0.0
+    )
+
 
 # --- BERTopic Specific Functions ---
 def create_guidance_labels(texts_series, weeb_seeds, furry_seeds):
@@ -240,27 +304,28 @@ def create_guidance_labels(texts_series, weeb_seeds, furry_seeds):
     )
     return y_labels, y_numeric_labels
 
+
 # --- Enhanced Term Extraction Functions ---
 def expand_terms_with_semantic_similarity(
-    topic_model, 
-    initial_terms_df, 
-    seed_terms, 
-    all_processed_texts, 
+    topic_model,
+    initial_terms_df,
+    seed_terms,
+    all_processed_texts,
     similarity_threshold=0.6,
-    max_additional_terms=200
+    max_additional_terms=200,
 ):
     """Expand term list by finding semantically similar terms using embeddings"""
     print(f"Expanding {len(initial_terms_df)} terms with semantic similarity...")
-    
+
     if initial_terms_df.empty:
         return initial_terms_df
-    
+
     # Get embedding model from topic model
     embedding_model = topic_model.embedding_model
-    if not hasattr(embedding_model, 'encode'):
+    if not hasattr(embedding_model, "encode"):
         print("Cannot access embedding model for semantic expansion")
         return initial_terms_df
-    
+
     # Get all unique terms from all topics
     all_topics = topic_model.get_topics()
     all_topic_terms = set()
@@ -269,58 +334,65 @@ def expand_terms_with_semantic_similarity(
             for term, score in terms[:100]:
                 if len(term) > 2 and term not in STOP_WORDS:
                     all_topic_terms.add(term)
-    
+
     # Filter out terms we already have
-    existing_terms = set(initial_terms_df['term'].tolist())
+    existing_terms = set(initial_terms_df["term"].tolist())
     candidate_terms = list(all_topic_terms - existing_terms)
-    
+
     if not candidate_terms:
         print("No additional candidate terms found")
         return initial_terms_df
-    
+
     print(f"Checking {len(candidate_terms)} candidate terms for semantic similarity...")
-    
+
     # Encode seed terms and candidate terms
     try:
         seed_embeddings = embedding_model.encode(seed_terms, show_progress_bar=False)
-        candidate_embeddings = embedding_model.encode(candidate_terms, show_progress_bar=False)
-        
+        candidate_embeddings = embedding_model.encode(
+            candidate_terms, show_progress_bar=False
+        )
+
         # Calculate similarities
         similarities = cosine_similarity(candidate_embeddings, seed_embeddings)
         max_similarities = np.max(similarities, axis=1)
-        
+
         # Find terms above threshold
         similar_indices = np.where(max_similarities >= similarity_threshold)[0]
-        
+
         expanded_terms = []
         for idx in similar_indices[:max_additional_terms]:
             term = candidate_terms[idx]
             similarity_score = max_similarities[idx]
-            
-            expanded_terms.append({
-                'term': term,
-                'subculture': initial_terms_df['subculture'].iloc[0] if not initial_terms_df.empty else 'unknown',
-                'similarity': similarity_score,
-                'specificity': 0.0,
-                'contextual_relevance': 0.0,
-                'seed_closeness': similarity_score,
-                'subculture_relevance': similarity_score * 0.8,
-                'uniqueness': 0.5,
-                'combined_score': similarity_score * 0.7,
-            })
-        
+
+            expanded_terms.append(
+                {
+                    "term": term,
+                    "subculture": initial_terms_df["subculture"].iloc[0]
+                    if not initial_terms_df.empty
+                    else "unknown",
+                    "similarity": similarity_score,
+                    "specificity": 0.0,
+                    "contextual_relevance": 0.0,
+                    "seed_closeness": similarity_score,
+                    "subculture_relevance": similarity_score * 0.8,
+                    "uniqueness": 0.5,
+                    "combined_score": similarity_score * 0.7,
+                }
+            )
+
         if expanded_terms:
             expanded_df = pd.DataFrame(expanded_terms)
             print(f"Found {len(expanded_df)} semantically similar terms")
-            
+
             # Combine with original terms
             combined_df = pd.concat([initial_terms_df, expanded_df], ignore_index=True)
             return combined_df.sort_values("combined_score", ascending=False)
-        
+
     except Exception as e:
         print(f"Error in semantic expansion: {e}")
-    
+
     return initial_terms_df
+
 
 def find_cooccurring_terms(
     all_processed_texts,
@@ -328,78 +400,80 @@ def find_cooccurring_terms(
     subculture_name,
     window_size=10,
     min_cooccurrence=5,
-    max_terms=150
+    max_terms=150,
 ):
     """Find terms that frequently co-occur with seed terms"""
     print(f"Finding terms that co-occur with {subculture_name} seed terms...")
-    
+
     cooccurrence_counts = {}
     seed_terms_lower = [term.lower() for term in seed_terms]
-    
+
     for text in all_processed_texts:
         if not isinstance(text, str):
             continue
-            
+
         words = text.lower().split()
-        
+
         # Find positions of seed terms
         seed_positions = []
         for i, word in enumerate(words):
             if word in seed_terms_lower:
                 seed_positions.append(i)
-        
+
         # Count co-occurring terms within window
         for seed_pos in seed_positions:
             start = max(0, seed_pos - window_size)
             end = min(len(words), seed_pos + window_size + 1)
-            
+
             for i in range(start, end):
                 if i != seed_pos:
                     term = words[i]
-                    if (len(term) > 2 and 
-                        term not in STOP_WORDS and 
-                        term not in seed_terms_lower and
-                        term.isalpha()):
-                        
+                    if (
+                        len(term) > 2
+                        and term not in STOP_WORDS
+                        and term not in seed_terms_lower
+                        and term.isalpha()
+                    ):
                         cooccurrence_counts[term] = cooccurrence_counts.get(term, 0) + 1
-    
+
     # Filter by minimum co-occurrence and convert to dataframe
     cooccur_terms = []
     for term, count in cooccurrence_counts.items():
         if count >= min_cooccurrence:
             relevance_score = min(1.0, count / 50.0)
-            
-            cooccur_terms.append({
-                'term': term,
-                'subculture': subculture_name,
-                'similarity': relevance_score * 0.5,
-                'specificity': 0.0,
-                'contextual_relevance': relevance_score,
-                'seed_closeness': relevance_score,
-                'subculture_relevance': relevance_score * 0.6,
-                'uniqueness': 0.5,
-                'combined_score': relevance_score * 0.4,
-                'cooccurrence_count': count,
-            })
-    
+
+            cooccur_terms.append(
+                {
+                    "term": term,
+                    "subculture": subculture_name,
+                    "similarity": relevance_score * 0.5,
+                    "specificity": 0.0,
+                    "contextual_relevance": relevance_score,
+                    "seed_closeness": relevance_score,
+                    "subculture_relevance": relevance_score * 0.6,
+                    "uniqueness": 0.5,
+                    "combined_score": relevance_score * 0.4,
+                    "cooccurrence_count": count,
+                }
+            )
+
     if cooccur_terms:
         cooccur_df = pd.DataFrame(cooccur_terms)
-        cooccur_df = cooccur_df.sort_values('cooccurrence_count', ascending=False).head(max_terms)
+        cooccur_df = cooccur_df.sort_values("cooccurrence_count", ascending=False).head(
+            max_terms
+        )
         print(f"Found {len(cooccur_df)} co-occurring terms")
         return cooccur_df
-    
+
     return pd.DataFrame()
 
+
 def extract_relevant_ngrams(
-    all_processed_texts,
-    seed_terms,
-    subculture_name,
-    max_ngrams=100,
-    min_freq=3
+    all_processed_texts, seed_terms, subculture_name, max_ngrams=100, min_freq=3
 ):
     """Extract relevant n-grams that contain seed terms or are contextually related"""
     print(f"Extracting relevant n-grams for {subculture_name}...")
-    
+
     # Create n-gram vectorizer
     ngram_vectorizer = CountVectorizer(
         ngram_range=(2, 3),
@@ -407,51 +481,56 @@ def extract_relevant_ngrams(
         max_df=0.3,
         tokenizer=tokenize_text,
         lowercase=True,
-        max_features=5000
+        max_features=5000,
     )
-    
+
     try:
         ngram_matrix = ngram_vectorizer.fit_transform(all_processed_texts)
         ngram_names = ngram_vectorizer.get_feature_names_out()
-        
+
         # Find n-grams that contain seed terms
         relevant_ngrams = []
         seed_terms_lower = [term.lower() for term in seed_terms]
-        
+
         for ngram in ngram_names:
             # Check if n-gram contains any seed term
             contains_seed = any(seed_term in ngram for seed_term in seed_terms_lower)
-            
+
             if contains_seed:
                 # Calculate frequency
                 ngram_idx = list(ngram_names).index(ngram)
                 frequency = ngram_matrix[:, ngram_idx].sum()
-                
+
                 relevance_score = min(1.0, frequency / 100.0)
-                
-                relevant_ngrams.append({
-                    'term': ngram,
-                    'subculture': subculture_name,
-                    'similarity': relevance_score * 0.6,
-                    'specificity': 0.0,
-                    'contextual_relevance': relevance_score,
-                    'seed_closeness': 1.0 if contains_seed else 0.0,
-                    'subculture_relevance': relevance_score * 0.8,
-                    'uniqueness': 0.5,
-                    'combined_score': relevance_score * 0.5,
-                    'frequency': frequency,
-                })
-        
+
+                relevant_ngrams.append(
+                    {
+                        "term": ngram,
+                        "subculture": subculture_name,
+                        "similarity": relevance_score * 0.6,
+                        "specificity": 0.0,
+                        "contextual_relevance": relevance_score,
+                        "seed_closeness": 1.0 if contains_seed else 0.0,
+                        "subculture_relevance": relevance_score * 0.8,
+                        "uniqueness": 0.5,
+                        "combined_score": relevance_score * 0.5,
+                        "frequency": frequency,
+                    }
+                )
+
         if relevant_ngrams:
             ngram_df = pd.DataFrame(relevant_ngrams)
-            ngram_df = ngram_df.sort_values('frequency', ascending=False).head(max_ngrams)
+            ngram_df = ngram_df.sort_values("frequency", ascending=False).head(
+                max_ngrams
+            )
             print(f"Found {len(ngram_df)} relevant n-grams")
             return ngram_df
-    
+
     except Exception as e:
         print(f"Error extracting n-grams: {e}")
-    
+
     return pd.DataFrame()
+
 
 def identify_subculture_terms_bertopic(
     topic_model,
@@ -464,7 +543,7 @@ def identify_subculture_terms_bertopic(
     seed_docs_indices_in_Xtfidf,
     doc_indices_map,
     top_terms_per_topic=50,
-    threshold_method='auto',
+    threshold_method="auto",
 ):
     print(f"Identifying terms for {subculture_name} subculture using BERTopic...")
     processed_terms = []
@@ -490,16 +569,18 @@ def identify_subculture_terms_bertopic(
                 raw_terms_in_topic, max_terms_per_topic=top_terms_per_topic
             )
             for term, score in cleaned_terms:
-                if (term not in STOP_WORDS and 
-                    len(term) > 2 and 
-                    len(term) < 20):
+                if term not in STOP_WORDS and len(term) > 2 and len(term) < 20:
                     subculture_relevance = 0.0
                     term_lower = term.lower()
                     if term_lower in [s.lower() for s in seed_terms_for_subculture]:
                         subculture_relevance = 1.0
-                    elif any(seed.lower() in term_lower for seed in seed_terms_for_subculture):
+                    elif any(
+                        seed.lower() in term_lower for seed in seed_terms_for_subculture
+                    ):
                         subculture_relevance = 0.7
-                    elif any(term_lower in seed.lower() for seed in seed_terms_for_subculture):
+                    elif any(
+                        term_lower in seed.lower() for seed in seed_terms_for_subculture
+                    ):
                         subculture_relevance = 0.5
                     if term not in term_data:
                         term_data[term] = {
@@ -507,7 +588,9 @@ def identify_subculture_terms_bertopic(
                             "count": 0,
                             "subculture_relevance": 0.0,
                         }
-                    term_data[term]["bertopic_score"] = max(term_data[term]["bertopic_score"], score)
+                    term_data[term]["bertopic_score"] = max(
+                        term_data[term]["bertopic_score"], score
+                    )
                     term_data[term]["count"] += 1
                     term_data[term]["subculture_relevance"] = max(
                         term_data[term]["subculture_relevance"], subculture_relevance
@@ -602,9 +685,11 @@ def identify_subculture_terms_bertopic(
         df_terms["combined_score"] = (
             weights["specificity"] * df_terms["normalized_specificity"]
             + weights["similarity"] * df_terms["normalized_similarity"]
-            + weights["contextual_relevance"] * (1 - df_terms["normalized_contextual_relevance"])
+            + weights["contextual_relevance"]
+            * (1 - df_terms["normalized_contextual_relevance"])
             + weights["seed_closeness"] * df_terms["normalized_seed_closeness"]
-            + weights["subculture_relevance"] * df_terms["normalized_subculture_relevance"]
+            + weights["subculture_relevance"]
+            * df_terms["normalized_subculture_relevance"]
         )
     elif len(df_terms) == 1:
         df_terms["combined_score"] = 0.5
@@ -615,6 +700,7 @@ def identify_subculture_terms_bertopic(
     final_terms = df_terms
     print(f"Outputting all {len(final_terms)} terms (no thresholding applied)")
     return final_terms
+
 
 def identify_subculture_terms_comprehensive(
     topic_model,
@@ -629,67 +715,92 @@ def identify_subculture_terms_comprehensive(
 ):
     """Comprehensive term identification using multiple methods"""
     print(f"\n=== Comprehensive Term Identification for {subculture_name} ===")
-    
+
     # Method 1: Original BERTopic-based extraction
     df_topic_terms = identify_subculture_terms_bertopic(
-        topic_model, subculture_name, subculture_numeric_label,
-        X_tfidf, feature_names_tfidf, seed_terms_for_subculture,
-        all_doc_texts_list, seed_docs_indices_in_Xtfidf, doc_indices_map,
-        top_terms_per_topic=50, threshold_method='auto'
+        topic_model,
+        subculture_name,
+        subculture_numeric_label,
+        X_tfidf,
+        feature_names_tfidf,
+        seed_terms_for_subculture,
+        all_doc_texts_list,
+        seed_docs_indices_in_Xtfidf,
+        doc_indices_map,
+        top_terms_per_topic=50,
+        threshold_method="auto",
     )
     print(f"BERTopic method: {len(df_topic_terms)} terms")
-    
+
     # Method 2: Semantic similarity expansion
     df_semantic = expand_terms_with_semantic_similarity(
-        topic_model, df_topic_terms, seed_terms_for_subculture, 
-        all_doc_texts_list, similarity_threshold=0.5, max_additional_terms=200
+        topic_model,
+        df_topic_terms,
+        seed_terms_for_subculture,
+        all_doc_texts_list,
+        similarity_threshold=0.5,
+        max_additional_terms=200,
     )
     print(f"After semantic expansion: {len(df_semantic)} terms")
-    
+
     # Method 3: Co-occurrence analysis
     df_cooccur = find_cooccurring_terms(
-        all_doc_texts_list, seed_terms_for_subculture, subculture_name,
-        window_size=15, min_cooccurrence=3, max_terms=150
+        all_doc_texts_list,
+        seed_terms_for_subculture,
+        subculture_name,
+        window_size=15,
+        min_cooccurrence=3,
+        max_terms=150,
     )
-    
+
     # Method 4: N-gram extraction
     df_ngrams = extract_relevant_ngrams(
-        all_doc_texts_list, seed_terms_for_subculture, subculture_name,
-        max_ngrams=100, min_freq=2
+        all_doc_texts_list,
+        seed_terms_for_subculture,
+        subculture_name,
+        max_ngrams=100,
+        min_freq=2,
     )
-    
+
     # Combine all methods
     all_dfs = [df for df in [df_semantic, df_cooccur, df_ngrams] if not df.empty]
-    
+
     if len(all_dfs) > 1:
         combined_df = pd.concat(all_dfs, ignore_index=True)
-        
+
         # Remove duplicates, keeping the one with highest combined_score
-        combined_df = combined_df.sort_values('combined_score', ascending=False)
-        combined_df = combined_df.drop_duplicates(subset=['term'], keep='first')
-        
+        combined_df = combined_df.sort_values("combined_score", ascending=False)
+        combined_df = combined_df.drop_duplicates(subset=["term"], keep="first")
+
         # Ensure all required columns exist
         required_columns = [
-            'term', 'specificity', 'similarity', 'contextual_relevance',
-            'seed_closeness', 'subculture_relevance', 'uniqueness', 'combined_score'
+            "term",
+            "specificity",
+            "similarity",
+            "contextual_relevance",
+            "seed_closeness",
+            "subculture_relevance",
+            "uniqueness",
+            "combined_score",
         ]
         for col in required_columns:
             if col not in combined_df.columns:
                 combined_df[col] = 0.0
-        
+
         # Output all combined terms, skip thresholding
         final_df = combined_df
-        
+
         print(f"\n=== Final Results for {subculture_name} ===")
         print(f"Total unique terms: {len(final_df)}")
         print(f"Top 10 terms: {final_df['term'].head(10).tolist()}")
-        
+
         return final_df
-    
+
     elif len(all_dfs) == 1:
         return all_dfs[0]
     else:
         return pd.DataFrame()
+
 
 def calculate_topic_diversity_bertopic(topic_model, top_n=10):
     print("Calculating BERTopic topic diversity...")
@@ -728,6 +839,7 @@ def calculate_topic_diversity_bertopic(topic_model, top_n=10):
     if pair_count == 0:
         return 1.0
     return 1 - (similarity_sum / pair_count)
+
 
 def evaluate_bertopic_model(topic_model, test_texts_list, model_name_prefix=""):
     metrics = {}
@@ -818,25 +930,27 @@ def evaluate_bertopic_model(topic_model, test_texts_list, model_name_prefix=""):
 
     return metrics
 
-def get_terms_by_quality_tier(df_terms, tier='all'):
+
+def get_terms_by_quality_tier(df_terms, tier="all"):
     """Return terms based on quality tier"""
     if df_terms.empty:
         return df_terms
-    
-    if tier == 'high':
+
+    if tier == "high":
         return df_terms[
-            (df_terms['combined_score'] >= 0.4) |
-            (df_terms['subculture_relevance'] >= 0.8)
+            (df_terms["combined_score"] >= 0.4)
+            | (df_terms["subculture_relevance"] >= 0.8)
         ]
-    elif tier == 'medium':
+    elif tier == "medium":
         return df_terms[
-            (df_terms['combined_score'] >= 0.2) &
-            (df_terms['subculture_relevance'] >= 0.3)
+            (df_terms["combined_score"] >= 0.2)
+            & (df_terms["subculture_relevance"] >= 0.3)
         ]
-    elif tier == 'low':
-        return df_terms[df_terms['combined_score'] >= 0.05]
+    elif tier == "low":
+        return df_terms[df_terms["combined_score"] >= 0.05]
     else:  # 'all'
         return df_terms
+
 
 def save_results_tiered(df_weeb, df_furry, output_dir="output/terms-analysis-bertopic"):
     """Save all terms to a single CSV file per subculture (no tiers)"""
@@ -844,9 +958,14 @@ def save_results_tiered(df_weeb, df_furry, output_dir="output/terms-analysis-ber
     os.makedirs(output_dir, exist_ok=True)
 
     columns = [
-        "term", "specificity", "similarity", "contextual_relevance",
-        "seed_closeness", "subculture_relevance", "uniqueness",
-        "combined_score"
+        "term",
+        "specificity",
+        "similarity",
+        "contextual_relevance",
+        "seed_closeness",
+        "subculture_relevance",
+        "uniqueness",
+        "combined_score",
     ]
 
     for df, name in [(df_weeb, "weeb"), (df_furry, "furry")]:
@@ -869,6 +988,7 @@ def save_results_tiered(df_weeb, df_furry, output_dir="output/terms-analysis-ber
         df.to_csv(os.path.join(output_dir, f"{name}_terms_bertopic.csv"), index=False)
         print(f"Saved {name} terms - All: {len(df)}")
 
+
 def save_metrics(metrics, metrics_output_dir="metrics/terms-analysis-bertopic"):
     print("Saving metrics to file...")
     os.makedirs(metrics_output_dir, exist_ok=True)
@@ -885,6 +1005,7 @@ def save_metrics(metrics, metrics_output_dir="metrics/terms-analysis-bertopic"):
         json.dump(formatted_metrics, f, indent=4)
     print(f"Metrics saved to {metrics_file}")
 
+
 def embed_and_save_in_chunks(
     df_full,
     text_column="processed_text",
@@ -898,25 +1019,33 @@ def embed_and_save_in_chunks(
     print(f"Using device: {model.device} for embeddings.")
     all_embeddings_list = []
     num_chunks = int(np.ceil(len(df_full) / chunk_size))
-    print(f"Total documents: {len(df_full)}, Chunk size: {chunk_size}, Num chunks: {num_chunks}")
+    print(
+        f"Total documents: {len(df_full)}, Chunk size: {chunk_size}, Num chunks: {num_chunks}"
+    )
 
     for i in range(num_chunks):
         start_idx = i * chunk_size
         end_idx = min((i + 1) * chunk_size, len(df_full))
         chunk_texts = df_full[text_column][start_idx:end_idx].tolist()
-        print(f"Processing chunk {i + 1}/{num_chunks} (docs {start_idx}-{end_idx - 1})...")
+        print(
+            f"Processing chunk {i + 1}/{num_chunks} (docs {start_idx}-{end_idx - 1})..."
+        )
 
         if not chunk_texts:
             print(f"Skipping empty chunk {i + 1}")
             continue
 
         try:
-            chunk_embeddings = model.encode(chunk_texts, show_progress_bar=True, batch_size=128)
+            chunk_embeddings = model.encode(
+                chunk_texts, show_progress_bar=True, batch_size=128
+            )
             all_embeddings_list.append(chunk_embeddings)
             print(f"Chunk {i + 1} embedded. Shape: {chunk_embeddings.shape}")
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) and model.device.type == "cuda":
-                print(f"CUDA OOM error in chunk {i + 1}. Try smaller batch or CPU for this chunk.")
+                print(
+                    f"CUDA OOM error in chunk {i + 1}. Try smaller batch or CPU for this chunk."
+                )
                 raise e
             else:
                 raise e
@@ -935,6 +1064,7 @@ def embed_and_save_in_chunks(
     print("Embeddings saved.")
     return final_embeddings
 
+
 def transform_embeddings_in_chunks(umap_model, embeddings, chunk_size=50000):
     """Transform embeddings in chunks to manage memory"""
     transformed_chunks = []
@@ -947,6 +1077,7 @@ def transform_embeddings_in_chunks(umap_model, embeddings, chunk_size=50000):
         transformed_chunks.append(transformed_chunk)
     return np.vstack(transformed_chunks)
 
+
 def perform_kmeans_fallback(reduced_embeddings_all, min_cluster_size_base):
     """Fallback clustering using MiniBatchKMeans"""
     n_samples = len(reduced_embeddings_all)
@@ -958,7 +1089,7 @@ def perform_kmeans_fallback(reduced_embeddings_all, min_cluster_size_base):
         n_clusters=n_clusters,
         batch_size=4096,
         random_state=42,
-        n_init='auto',
+        n_init="auto",
         verbose=0,
     )
 
@@ -967,7 +1098,10 @@ def perform_kmeans_fallback(reduced_embeddings_all, min_cluster_size_base):
 
     return final_labels, kmeans_fallback
 
-def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, max_samples_hdbscan=100000):
+
+def perform_final_clustering(
+    reduced_embeddings_all, min_cluster_size_base=20, max_samples_hdbscan=100000
+):
     """Perform final clustering with memory-aware HDBSCAN or fallback methods"""
     n_samples = len(reduced_embeddings_all)
     print(f"Performing final clustering on {n_samples} samples...")
@@ -980,12 +1114,14 @@ def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, m
                 min_cluster_size=max(min_cluster_size_base, n_samples // 1000),
                 min_samples=5,
                 metric="euclidean",
-                algorithm='ball_tree',
+                algorithm="ball_tree",
                 memory=Memory(location=None),
                 n_jobs=1,
             )
             final_labels = hdb.fit_predict(reduced_embeddings_all)
-            print(f"HDBSCAN completed successfully with {len(set(final_labels)) - (1 if -1 in final_labels else 0)} clusters")
+            print(
+                f"HDBSCAN completed successfully with {len(set(final_labels)) - (1 if -1 in final_labels else 0)} clusters"
+            )
             return final_labels, hdb
         except (MemoryError, np.core._exceptions._ArrayMemoryError) as e:
             print(f"HDBSCAN failed due to memory: {e}")
@@ -1005,7 +1141,7 @@ def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, m
                 min_cluster_size=max(min_cluster_size_base, sample_size // 500),
                 min_samples=5,
                 metric="euclidean",
-                algorithm='ball_tree',
+                algorithm="ball_tree",
                 memory=Memory(location=None),
                 n_jobs=1,
                 prediction_data=True,
@@ -1016,7 +1152,9 @@ def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, m
             try:
                 print("Attempting hdbscan.approximate_predict for label propagation...")
                 pred_labels, _ = approximate_predict(hdb, reduced_embeddings_all)
-                print(f"approximate_predict completed. {len(set(pred_labels)) - (1 if -1 in pred_labels else 0)} clusters")
+                print(
+                    f"approximate_predict completed. {len(set(pred_labels)) - (1 if -1 in pred_labels else 0)} clusters"
+                )
                 return pred_labels, hdb
             except Exception as e:
                 print(f"approximate_predict failed: {e}")
@@ -1028,7 +1166,9 @@ def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, m
             unique_labels = set(sample_labels) - {-1}
             if len(unique_labels) == 0:
                 print("No clusters found in sample. Using MiniBatchKMeans fallback.")
-                return perform_kmeans_fallback(reduced_embeddings_all, min_cluster_size_base)
+                return perform_kmeans_fallback(
+                    reduced_embeddings_all, min_cluster_size_base
+                )
 
             cluster_centers = []
             cluster_label_mapping = []
@@ -1041,11 +1181,13 @@ def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, m
 
             if len(cluster_centers) == 0:
                 print("No valid cluster centers found. Using MiniBatchKMeans fallback.")
-                return perform_kmeans_fallback(reduced_embeddings_all, min_cluster_size_base)
+                return perform_kmeans_fallback(
+                    reduced_embeddings_all, min_cluster_size_base
+                )
 
             cluster_centers = np.array(cluster_centers)
 
-            nn = NearestNeighbors(n_neighbors=1, metric='euclidean')
+            nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
             nn.fit(cluster_centers)
 
             chunk_size = 50000
@@ -1058,11 +1200,15 @@ def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, m
                 distances, indices = nn.kneighbors(chunk_embeddings)
                 max_distance = np.percentile(distances, 95)
 
-                for j, (dist, idx) in enumerate(zip(distances.flatten(), indices.flatten())):
+                for j, (dist, idx) in enumerate(
+                    zip(distances.flatten(), indices.flatten())
+                ):
                     if dist <= max_distance:
                         final_labels[i + j] = cluster_label_mapping[idx]
 
-            print(f"Label propagation completed. {len(set(final_labels)) - (1 if -1 in final_labels else 0)} clusters")
+            print(
+                f"Label propagation completed. {len(set(final_labels)) - (1 if -1 in final_labels else 0)} clusters"
+            )
             return final_labels, hdb
 
         except (MemoryError, np.core._exceptions._ArrayMemoryError) as e:
@@ -1071,6 +1217,7 @@ def perform_final_clustering(reduced_embeddings_all, min_cluster_size_base=20, m
 
     # Strategy 3: MiniBatchKMeans fallback
     return perform_kmeans_fallback(reduced_embeddings_all, min_cluster_size_base)
+
 
 def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
     np.random.seed(seed)
@@ -1114,7 +1261,9 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
         y_numeric_labels_full_np,
         test_size=0.2,
         random_state=seed,
-        stratify=y_numeric_labels_full_np if len(set(y_numeric_labels_full_np)) > 1 else None,
+        stratify=y_numeric_labels_full_np
+        if len(set(y_numeric_labels_full_np)) > 1
+        else None,
     )
 
     train_embeddings = precomputed_embeddings[train_indices]
@@ -1154,7 +1303,9 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
         verbose=True,
         n_jobs=1,
     )
-    print(f"UMAP: n_neighbors={umap_model.n_neighbors}, n_components={umap_model.n_components}")
+    print(
+        f"UMAP: n_neighbors={umap_model.n_neighbors}, n_components={umap_model.n_components}"
+    )
 
     # --- HYBRID INCREMENTAL PIPELINE ---
     kmeans_n_clusters = 100
@@ -1196,7 +1347,9 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
     initial_fit_size = max(initial_fit_size, 75000)
     initial_fit_size = min(initial_fit_size, len(train_embeddings))
 
-    print(f"Total training samples: {len(train_embeddings)}, Initial fit size: {initial_fit_size}")
+    print(
+        f"Total training samples: {len(train_embeddings)}, Initial fit size: {initial_fit_size}"
+    )
 
     initial_fit_texts = train_texts_for_bertopic[:initial_fit_size]
     initial_fit_embeddings = train_embeddings[:initial_fit_size]
@@ -1221,7 +1374,9 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
     if len(partial_fit_texts) > 0:
         print(f"Proceeding with partial_fit for {len(partial_fit_texts)} documents...")
         partial_fit_chunk_size = 50000
-        num_partial_fit_chunks = int(np.ceil(len(partial_fit_texts) / partial_fit_chunk_size))
+        num_partial_fit_chunks = int(
+            np.ceil(len(partial_fit_texts) / partial_fit_chunk_size)
+        )
 
         for i in range(num_partial_fit_chunks):
             start_idx = i * partial_fit_chunk_size
@@ -1233,7 +1388,9 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
             if not chunk_texts:
                 continue
 
-            print(f"Partial_fit chunk {i + 1}/{num_partial_fit_chunks} with {len(chunk_texts)} documents...")
+            print(
+                f"Partial_fit chunk {i + 1}/{num_partial_fit_chunks} with {len(chunk_texts)} documents..."
+            )
             try:
                 topic_model_km.partial_fit(
                     documents=chunk_texts, embeddings=chunk_embeddings, y=chunk_y
@@ -1250,9 +1407,14 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
 
     # UMAP transformer selection logic
     umap_transformer = None
-    if hasattr(topic_model_km, 'umap_model_') and topic_model_km.umap_model_ is not None:
+    if (
+        hasattr(topic_model_km, "umap_model_")
+        and topic_model_km.umap_model_ is not None
+    ):
         umap_transformer = topic_model_km.umap_model_
-    elif hasattr(topic_model_km, 'umap_model') and topic_model_km.umap_model is not None:
+    elif (
+        hasattr(topic_model_km, "umap_model") and topic_model_km.umap_model is not None
+    ):
         umap_transformer = topic_model_km.umap_model
     else:
         print("No UMAP model available. Skipping final refinement.")
@@ -1268,15 +1430,19 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
                     umap_transformer, precomputed_embeddings, chunk_size=50000
                 )
             else:
-                reduced_embeddings_all = umap_transformer.transform(precomputed_embeddings)
+                reduced_embeddings_all = umap_transformer.transform(
+                    precomputed_embeddings
+                )
 
-            print(f"UMAP transformation completed. Shape: {reduced_embeddings_all.shape}")
+            print(
+                f"UMAP transformation completed. Shape: {reduced_embeddings_all.shape}"
+            )
 
             # Perform memory-aware final clustering
             final_labels, clustering_model = perform_final_clustering(
                 reduced_embeddings_all,
                 min_cluster_size_base=20,
-                max_samples_hdbscan=75000
+                max_samples_hdbscan=75000,
             )
 
             # Create refined topic model
@@ -1294,9 +1460,7 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
 
                 docs = df["processed_text"].tolist()
                 final_topic_model.fit_transform(
-                    docs,
-                    embeddings=precomputed_embeddings,
-                    y=final_labels.tolist()
+                    docs, embeddings=precomputed_embeddings, y=final_labels.tolist()
                 )
 
                 print("Refined BERTopic model created successfully.")
@@ -1376,17 +1540,19 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
                     sample_labels = final_labels[valid_indices]
 
                 sil = silhouette_score(sample_embeddings, sample_labels)
-                bertopic_metrics["final_clustering_silhouette_score"] = round(float(sil), 4)
+                bertopic_metrics["final_clustering_silhouette_score"] = round(
+                    float(sil), 4
+                )
 
                 db = davies_bouldin_score(sample_embeddings, sample_labels)
-                bertopic_metrics["final_clustering_davies_bouldin_score"] = round(float(db), 4)
+                bertopic_metrics["final_clustering_davies_bouldin_score"] = round(
+                    float(db), 4
+                )
 
             except Exception as e:
                 print(f"Error calculating clustering metrics: {e}")
 
-    save_results_tiered(
-        df_weeb, df_furry, output_dir="output/terms-analysis-bertopic"
-    )
+    save_results_tiered(df_weeb, df_furry, output_dir="output/terms-analysis-bertopic")
     save_metrics(
         bertopic_metrics,
         metrics_output_dir="metrics/terms-analysis-bertopic",
@@ -1394,20 +1560,34 @@ def main(file_path, n_topics_hint=50, max_features_tfidf=10000, seed=42):
 
     return df_weeb, df_furry, bertopic_metrics
 
+
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run BERTopic subculture term analysis.")
-    parser.add_argument(
-        "--input", type=str, required=True, help="Path to input CSV file with a 'text' column."
+    parser = argparse.ArgumentParser(
+        description="Run BERTopic subculture term analysis."
     )
     parser.add_argument(
-        "--n_topics_hint", type=int, default=50, help="Hint for the number of topics (default: 50)."
+        "--input",
+        type=str,
+        required=True,
+        help="Path to input CSV file with a 'text' column.",
     )
     parser.add_argument(
-        "--max_features_tfidf", type=int, default=10000, help="Maximum number of TF-IDF features (default: 10000)."
+        "--n_topics_hint",
+        type=int,
+        default=50,
+        help="Hint for the number of topics (default: 50).",
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42).")
+    parser.add_argument(
+        "--max_features_tfidf",
+        type=int,
+        default=10000,
+        help="Maximum number of TF-IDF features (default: 10000).",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed (default: 42)."
+    )
     args = parser.parse_args()
 
     main(

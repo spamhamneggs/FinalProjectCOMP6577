@@ -1,169 +1,221 @@
-# Bluesky User Classifier
+# Bluesky User Interest Classifier
 
-This tool classifies Bluesky users with a **primary** and an optional **secondary** category (e.g., Primary: Weeb, Secondary: Slight Furry; or Primary: Normie, Secondary: None) based on their post history. It uses a fine-tuned language model (default: `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`) to analyze post content and identify patterns associated with different user types. It also provides evaluation metrics after fine-tuning.
+This project provides a complete pipeline for classifying Bluesky users based on their post content, primarily identifying interests related to "weeb" (anime/manga) and "furry" subcultures.
 
-The core heuristic labeling now uses a more adaptive system: it calculates normalized scores (0-1 range) for "weeb" and "furry" categories based on term lists. Then, it determines category-specific cutoff scores based on user-defined percentiles of these score distributions (e.g., the 70th percentile of all weeb scores might define the "normie" cutoff for weeb-related content). These dynamic, category-specific cutoffs are then used to assign primary and secondary labels.
+The system uses a two-stage approach:
 
-## Features
+1. **Heuristic Analysis:** A rule-based system calculates "weeb" and "furry" scores for each post based on weighted term lists. This stage is used to generate a large, auto-labeled dataset.
+2. **LLM Fine-Tuning:** A small, efficient language model (e.g., `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`) is fine-tuned on the heuristically labeled data. This model learns to replicate and generalize the classification logic, allowing for nuanced, context-aware classification of new users without relying directly on the heuristic rules at inference time.
 
-- Fine-tunes a language model (default: `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`) with 4-bit quantization for efficient classification.  
-- Uses a heuristic scoring system based on weighted term databases. Scores are normalized (0-1 range).  
-- Heuristic labeling for training/evaluation data uses **category-specific percentile-based cutoffs** to determine "Normie", "Slight", and "Strong" signal strengths for each category (weeb, furry) independently before combining them into primary/secondary labels.  
-- Fetches user posts directly from Bluesky using the ATProto API.  
-- Provides primary and secondary classifications, along with heuristic scores for Weeb and Furry tendencies.  
-- Generates classification metrics (classification report and confusion matrix for combined primary-secondary labels) after fine-tuning.
+The project is split into two main scripts:
+
+* `heuristic_analyzer.py`: A tool for analyzing score distributions and determining the optimal score cutoffs for labeling (e.g., what score constitutes a "Slight Weeb" vs. a "Strong Weeb").
+* `classifier.py`: The main application for preprocessing data, fine-tuning the model with fixed cutoffs, evaluating its performance, and classifying live Bluesky users.
+
+## Table of Contents
+
+- [Bluesky User Interest Classifier](#bluesky-user-interest-classifier)
+  - [Table of Contents](#table-of-contents)
+  - [Project Workflow](#project-workflow)
+  - [File Structure](#file-structure)
+  - [Installation (using uv)](#installation-using-uv)
+  - [Usage](#usage)
+    - [1. (Optional) Analyze Heuristics (`heuristic_analyzer.py`)](#1-optional-analyze-heuristics-heuristic_analyzerpy)
+    - [2. Preprocess Data (`classifier.py preprocess`)](#2-preprocess-data-classifierpy-preprocess)
+    - [3. Fine-tune the Model (`classifier.py finetune`)](#3-fine-tune-the-model-classifierpy-finetune)
+    - [4. Evaluate the Model (`classifier.py evaluate`)](#4-evaluate-the-model-classifierpy-evaluate)
+    - [5. Classify a User (`classifier.py classify`)](#5-classify-a-user-classifierpy-classify)
+  - [Configuration](#configuration)
+
+## Project Workflow
+
+A typical end-to-end workflow for this project looks like this:
+
+1. **Prepare Term Databases:** Create `weeb_terms_bertopic.csv` and `furry_terms_bertopic.csv` in `output/terms-analysis-bertopic/`. These files must contain `term` and `combined_score` columns.
+2. **Find Optimal Cutoffs:** Use `heuristic_analyzer.py` on a large, representative dataset of posts to analyze the score distributions and find the ideal score values that correspond to different classification strengths (e.g., the 80th percentile of weeb scores). This will output a `category_thresholds.json` file.
+3. **Preprocess Raw Data:** Use the `classifier.py preprocess` command to clean and filter a raw CSV dump of Bluesky posts, preparing it for training.
+4. **Fine-tune the LLM:** Use the `classifier.py finetune` command, feeding it the preprocessed data and the **fixed cutoff values** you determined in step 2. This will train and save a new model adapter.
+5. **Evaluate Performance:** Use the `classifier.py evaluate` command to test your fine-tuned model against a hold-out set, generating a classification report and confusion matrix.
+6. **Classify Live Users:** Use the `classifier.py classify` command with your fine-tuned model to fetch a user's posts from Bluesky and determine their primary and secondary interest classifications.
+
+## File Structure
+
+```txt
+.
+├── classifier.py                 # Main script for training, evaluation, and classification
+├── heuristic_analyzer.py         # Script for analyzing heuristics and finding cutoffs
+├── output/
+│   ├── terms-analysis-bertopic/
+│   │   ├── weeb_terms_bertopic.csv # Weeb term list with scores
+│   │   └── furry_terms_bertopic.csv # Furry term list with scores
+│   └── heuristic_analysis_results_.../ # Output from heuristic_analyzer.py
+│       ├── category_thresholds.json    # Calculated score cutoffs
+│       └── ...                         # Distribution plots and reports
+├── finetuned_model/                # Default output directory for fine-tuned models
+│   ├── adapter_config.json
+│   ├── README.md
+│   └── ...
+├── .env                            # For storing Bluesky credentials (optional)
+└── README.md                       # This file
+```
+
+## Installation (using uv)
+
+This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management.
+
+1. Clone the repository:
+
+    ```bash
+    git clone <your-repo-url>
+    cd <your-repo-directory>
+    ```
+
+2. Install the required Python packages using `uv`:
+
+    ```bash
+    # Install base dependencies
+    uv sync
+    ```
 
 ## Usage
 
-The tool provides four main commands.
+Below are detailed instructions for each script and command.
 
-### 1. Preprocess Bluesky Data
+### 1. (Optional) Analyze Heuristics (`heuristic_analyzer.py`)
 
-Before training, you need to preprocess your Bluesky data (if you have it in a CSV format from another source):
+This script helps you find the best **absolute score cutoffs** to use for training by analyzing the score distribution across a large dataset and calculating values based on percentiles.
 
-```bash  
-python script.py preprocess --input raw_bluesky_data.csv --output processed_data.csv
-```
-
-- --input: Path to the raw CSV file containing Bluesky posts.  
-- --output: Path where the processed CSV file will be saved.
-
-### **2. Fine-tune the Model**
-
-Train the model using the preprocessed data. The heuristic labels for training will be generated using category-specific percentile cutoffs derived from the --data_csv.
+**Example:**
+Find the score values at the 80th percentile for "Normie" and 95th for "Strong" for both categories.
 
 ```bash
-python script.py finetune   
-    --data_csv processed_data.csv   
-    --output_dir finetuned_model   
-    --base_model_name "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"   
-    --epochs 3   
-    --weeb-normie-percentile 70   
-    --weeb-strong-percentile 90   
-    --furry-normie-percentile 70   
-    --furry-strong-percentile 90
+uv run heuristic_analyzer.py \
+  --data_csv path/to/large_dataset.csv \
+  --output_dir heuristic_analysis_results \
+  --weeb-normie-percentile 80 \
+  --weeb-strong-percentile 95 \
+  --furry-normie-percentile 80 \
+  --furry-strong-percentile 95
 ```
 
-**Key Options:**
+This will create a directory under `heuristic_analysis_results/` containing plots, reports, and a `category_thresholds.json` file. The JSON file will contain the absolute score values you should use in the `finetune` step.
 
-- --data_csv: Path to the processed Bluesky data CSV for fine-tuning.  
-- --output_dir: Directory to save the fine-tuned model (default: finetuned_model).  
-- --base_model_name: Base model for fine-tuning (default: unsloth/Qwen3-0.6B-unsloth-bnb-4bit).  
-- --epochs: Number of training epochs (default: 3).  
-- --batch_size: Training batch size (default: 8).  
-- --learning_rate: Learning rate (default: 2e-4).  
-- --eval_split_size: Proportion of data for validation (default: 0.2).  
-- --skip_eval_after_train: If set, skips evaluation after training.  
-- --chunk_size_csv: Chunk size for reading CSVs (default: 50000).  
-- **Percentile Arguments for Heuristic Labeling:**  
-  - --weeb-normie-percentile: Percentile of weeb scores to define the "Normie" cutoff for weeb signals (default: 70).  
-  - --weeb-strong-percentile: Percentile of weeb scores to define the "Strong" cutoff for weeb signals (default: 90).  
-  - --furry-normie-percentile: Percentile of furry scores to define the "Normie" cutoff for furry signals (default: 70).  
-  - --furry-strong-percentile: Percentile of furry scores to define the "Strong" cutoff for furry signals (default: 90).
+**Example `category_thresholds.json` output:**
 
-After fine-tuning, if evaluation is not skipped, a classification report and confusion matrix will be generated.
+```json
+{
+  "weeb_normie_cutoff": 0.0115,
+  "weeb_strong_cutoff": 0.0521,
+  "furry_normie_cutoff": 0.0145,
+  "furry_strong_cutoff": 0.0633,
+  "weeb_normie_percentile": 77,
+  "weeb_strong_percentile": 87,
+  "furry_normie_percentile": 78,
+  "furry_strong_percentile": 88
+}
+}
+```
 
-### **3. Evaluate a Model**
+### 2. Preprocess Data (`classifier.py preprocess`)
 
-Evaluate a pre-trained (fine-tuned or base) model. Heuristic labels for the evaluation data will be generated using category-specific percentile cutoffs derived from the `--eval_data_csv`.
+This command cleans a raw data CSV, keeping only valid posts and saving them to a new file.
+
+**Example:**
 
 ```bash
-python script.py evaluate
-    --model_path finetuned_model
-    --eval_data_csv processed_eval_data.csv
-    --metrics_output_dir evaluation_results
-    --weeb-normie-percentile 70
-    --weeb-strong-percentile 90
-    --furry-normie-percentile 70
-    --furry-strong-percentile 90
+uv run classifier.py preprocess \
+  --input raw_bluesky_data.csv \
+  --output processed_posts.csv
 ```
 
-**Key Options:**
+### 3. Fine-tune the Model (`classifier.py finetune`)
 
-- --model_path: Path to the fine-tuned model or a base model name.  
-- --eval_data_csv: Path to the CSV for evaluation.  
-- --metrics_output_dir: Directory for metrics (default: evaluation_metrics).  
-- --batch_size: Evaluation batch size (default: 16).  
-- **Percentile Arguments:** Same as for finetune, applied to the --eval_data_csv.
+This is the core training step. It uses the heuristic rules with **fixed, absolute cutoffs** to generate prompt/response pairs on the fly and fine-tune the LLM.
 
-### **4. Classify a User**
-
-Classify a Bluesky user using a trained model. The heuristic fallback also uses the specified percentile cutoffs.
+**Example:**
+Use the cutoff values discovered with `heuristic_analyzer.py`.
 
 ```bash
-python script.py classify
-    --model_path finetuned_model
-    --username target_user.bsky.social
-    --bluesky_user your_login.bsky.social
-    --bluesky_pass your_app_password
-    --weeb-normie-percentile 70
-    --weeb-strong-percentile 90
-    --furry-normie-percentile 70
-    --furry-strong-percentile 90
+uv run classifier.py finetune \
+  --data_csv processed_posts.csv \
+  --output_dir finetuned_weeb-furry_model_v1 \
+  --base_model_name "unsloth/Qwen3-0.6B-unsloth-bnb-4bit" \
+  --epochs 3 \
+  --batch_size 8 \
+  --learning_rate 1e-5 \
+  --max_training_samples 400000 \
+  --test_size 10000 \
+  --weeb-normie-cutoff 0.0115 \
+  --weeb-strong-cutoff 0.0521 \
+  --furry-normie-cutoff 0.0145 \
+  --furry-strong-cutoff 0.0633
 ```
 
-**Key Options:**
+This will train the model and save the LoRA adapters to the `finetuned_weeb-furry_model_v1` directory. It will also automatically run an evaluation at the end.
 
-- --model_path: Path to the fine-tuned model or a base model name.  
-- --username: Bluesky handle of the user to classify.  
-- --bluesky_user, --bluesky_pass: Your Bluesky login credentials.  
-- --batch_size: Batch size for model inference on posts (default: 8).  
-- **Percentile Arguments:** Same as for finetune. These define how the heuristic scores (calculated for the target user's posts) are interpreted for the heuristic part of the classification. For consistency, these should ideally match the percentiles used during fine-tuning of the model specified in --model_path.
+### 4. Evaluate the Model (`classifier.py evaluate`)
 
-## **How It Works**
+If you want to re-evaluate a trained model on a different dataset, use this command.
 
-1. **Term Databases**: The system uses weighted term databases (weeb_terms.csv, furry_terms.csv).  
-2. **Score Calculation**: For each post, a weeb_score and a furry_score are calculated. This score is normalized (0-1 range) by dividing the sum of matched term scores by the total possible score from all terms in that category's list.  
-3. **Percentile Cutoff Determination (for finetune and evaluate commands):**  
-   - When preparing data (e.g., from --data_csv or --eval_data_csv), the script first performs a pre-pass over all posts in that specific CSV.  
-   - It calculates weeb_score and furry_score for every post in the dataset.  
-   - Based on the distributions of these scores *within that dataset*, it determines four actual cutoff score values:  
-     - weeb_normie_cutoff: The score at the Nth percentile (e.g., 70th, from --weeb-normie-percentile) of all weeb scores.  
-     - weeb_strong_cutoff: The score at the Mth percentile (e.g., 90th, from --weeb-strong-percentile) of all weeb scores.  
-     - furry_normie_cutoff: The score at the Xth percentile (e.g., 70th, from --furry-normie-percentile) of all furry scores.  
-     - furry_strong_cutoff: The score at the Yth percentile (e.g., 90th, from --furry-strong-percentile) of all furry scores.  
-   - These four dynamically calculated cutoff scores are then used for heuristic labeling of each post in that dataset.  
-4. **Heuristic Labeling (for Training Data & Evaluation Ground Truth)**:  
-   - For each post, its weeb_score is compared against weeb_normie_cutoff and weeb_strong_cutoff to determine a "weeb strength" (Normie, Slight, or Strong).  
-   - Similarly, its furry_score is compared against furry_normie_cutoff and furry_strong_cutoff to determine a "furry strength."  
-   - These two independent strength assessments are then combined to assign a final primary and secondary label (e.g., "Weeb-Slight Furry", "Normie-None") to the post. This combined label becomes the true_label_heuristic.  
-5. **Fine-tuning**: The language model is fine-tuned on a dataset of Bluesky posts formatted as prompts and the heuristically generated responses (which include the primary and secondary classifications derived from the percentile-based system).  
-6. **Evaluation (Post-Finetuning)**: The fine-tuned model's performance is assessed against the true_label_heuristic generated using the same percentile-based system on the evaluation dataset.  
-7. **Classification Process (for classify command)**:  
-   - Fetches recent posts for the target user.  
-   - Calculates overall heuristic weeb_score and furry_score for the user based on their combined posts.  
-   - The percentile values provided to the classify command are used to set the four cutoff scores (weeb_normie, weeb_strong, furry_normie, furry_strong) for interpreting these heuristic scores.  
-   - Uses the fine-tuned model to classify a sample of individual posts.  
-   - Aggregates model predictions to determine final primary/secondary classifications. If the model is unclear, it may fall back to a classification based on the overall heuristic scores interpreted with the provided percentile cutoffs.  
-8. **Score Interpretation & Heuristic Labeling Details**:  
-   - The weeb_score and furry_score you see in the output are the normalized scores (0-1 range).  
-   - The heuristic labeling logic:  
-     1. Determines "weeb strength" (Normie, Slight, Strong) by comparing w_score to weeb_normie_cutoff and weeb_strong_cutoff.  
-     2. Determines "furry strength" (Normie, Slight, Strong) by comparing f_score to furry_normie_cutoff and furry_strong_cutoff.  
-     3. If both strengths are "Normie", result is "Normie-None".  
-     4. If one has signal (Slight/Strong) and the other is "Normie", the one with signal becomes primary (e.g., "Weeb-None", "Slight Furry-None").  
-     5. If both have signal, the one with the higher raw score (w_score vs f_score) becomes primary, and the other secondary, reflecting their respective strengths (e.g., "Weeb-Slight Furry", "Slight Furry-Strong Weeb"). Self-secondary labels (e.g., "Weeb-Slight Weeb") are resolved to "Primary-None".
+**Example:**
 
-## **Example Output (Classification)**
+```bash
+uv run classifier.py evaluate \
+  --model_path finetuned_weeb-furry_model_v1 \
+  --eval_data_csv path/to/evaluation_data.csv \
+  --metrics_output_dir evaluation_results \
+  --weeb-normie-cutoff 0.0115 \
+  --weeb-strong-cutoff 0.0521 \
+  --furry-normie-cutoff 0.0145 \
+  --furry-strong-cutoff 0.0633
+```
+
+This generates a `classification_report.txt` and `confusion_matrix_combined.png` in the specified output directory.
+
+### 5. Classify a User (`classifier.py classify`)
+
+Use your fine-tuned model to classify a live Bluesky user.
+
+**Prerequisites:**
+
+* You must have a Bluesky account.
+* Provide your credentials either via a `.env` file (see [Configuration](#configuration)) or command-line arguments.
+
+**Example:**
+
+```bash
+uv run classifier.py classify \
+  --model_path finetuned_weeb-furry_model_v1 \
+  --username pfau.bsky.social \
+  --bluesky_user "your-handle.bsky.social" \
+  --bluesky_pass "your-app-password"
+```
+
+The script will fetch the user's recent posts, classify each one using the LLM, and determine a final classification based on the most frequent prediction.
+
+**Example Output:**
 
 ```txt
-==================================================  
-Classification Results for @example.bsky.social  
-==================================================  
-
-Primary Classification: Weeb  
-Secondary Classification: Slight Furry  
-  Heuristic Weeb Score: 0.018
-  Heuristic Furry Score: 0.009
-  Heuristic Normie Score: 0.982
-  Model Post Classifications (sample): ['Weeb-Slight Furry', 'Normie-None', 'Weeb-None']  
+==================================================
+LLM-Only Classification Results for @pfau.bsky.social
+==================================================
+Primary Classification: Weeb
+Secondary Classification: Slight Furry
+Model Post Classifications: 250 posts analyzed
+Prediction distribution:
+  Weeb-Slight Furry: 120 (48.0%)
+  Weeb-None: 80 (32.0%)
+  Normie-None: 50 (20.0%)
 ==================================================
 ```
 
-*(Note: Example scores are illustrative; actual normalized scores from the heuristic are typically very low, e.g., 0.001-0.025 range).
+## Configuration
 
-## **Notes**
+For the `classify` command, you can store your Bluesky credentials in a `.env` file in the project's root directory to avoid passing them on the command line.
 
-- The accuracy of classification depends heavily on the quality of term databases, the chosen percentile cutoffs, and the training data.  
-- Evaluation metrics show how well the model learned to mimic the sophisticated heuristic labeling, not necessarily absolute correctness against human judgment.  
-- Requires a Bluesky account (username and app password).
+**`.env` file:**
+
+```env
+BLUESKY_USERNAME="your-handle.bsky.social"
+BLUESKY_PASSWORD="your-app-password-xxxx-xxxx-xxxx"
+```

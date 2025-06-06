@@ -437,8 +437,9 @@ def evaluate_model(
         )
     except Exception as e:
         metrics[f"{prefix}davies_bouldin_score"] = None
-        print(f"Warning: Could not calculate Davies-Bouldin score for {model_name} - {e}")
-
+        print(
+            f"Warning: Could not calculate Davies-Bouldin score for {model_name} - {e}"
+        )
 
     # Calculate topic distribution statistics
     try:

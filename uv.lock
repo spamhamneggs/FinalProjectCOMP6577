@@ -2134,7 +2134,7 @@ wheels = [
 [[package]]
 name = "terms-analysis-bertopic"
 version = "0.1.0"
-source = { virtual = "terms-analysis-bertopic" }
+source = { virtual = "terms-analyzer-bertopic" }
 dependencies = [
     { name = "bertopic" },
     { name = "nltk" },

@@ -1,23 +1,21 @@
                           precision    recall  f1-score   support
 
-             Furry-Furry       0.00      0.00      0.00         0
-              Furry-None       0.00      0.00      0.00         4
-       Furry-Slight Weeb       0.18      0.23      0.21       277
-              Furry-Weeb       0.62      0.34      0.44       775
-             Normie-None       1.00      0.01      0.02      5451
-       Slight Furry-None       0.10      0.09      0.09       472
-Slight Furry-Slight Weeb       0.30      0.18      0.23      1093
-       Slight Furry-Weeb       0.00      0.00      0.00         7
-       Slight Weeb-Furry       0.00      0.00      0.00         0
-        Slight Weeb-None       0.09      0.10      0.09       453
-Slight Weeb-Slight Furry       0.21      0.20      0.21       723
- Slight Weeb-Slight Weeb       0.00      0.00      0.00         0
-        Slight Weeb-Weeb       0.00      0.00      0.00         0
+              Furry-None       0.67      0.50      0.57        12
+       Furry-Slight Weeb       0.81      0.67      0.73        33
+              Furry-Weeb       0.97      0.64      0.77       157
+             Normie-None       0.99      0.29      0.44      1201
+       Slight Furry-None       0.93      0.38      0.54       377
+Slight Furry-Slight Weeb       0.00      0.00      0.00         0
+       Slight Furry-Weeb       0.00      0.00      0.00         0
+        Slight Weeb-None       0.98      0.46      0.62       101
+Slight Weeb-Slight Furry       0.00      0.00      0.00         0
          Unknown-Unknown       0.00      0.00      0.00         0
-              Weeb-Furry       0.57      0.28      0.38       496
-               Weeb-None       0.00      0.00      0.00         1
-       Weeb-Slight Furry       0.15      0.19      0.17       248
+              Weeb-Furry       0.68      0.82      0.74        62
+               Weeb-None       0.16      0.73      0.26        11
+       Weeb-Slight Furry       0.84      0.57      0.68        46
+        Weeb-Slight Weeb       0.00      0.00      0.00         0
+               Weeb-Weeb       0.00      0.00      0.00         0
 
-                accuracy                           0.10     10000
-               macro avg       0.19      0.10      0.11     10000
-            weighted avg       0.69      0.10      0.12     10000
+                accuracy                           0.37      2000
+               macro avg       0.47      0.34      0.36      2000
+            weighted avg       0.95      0.37      0.51      2000
