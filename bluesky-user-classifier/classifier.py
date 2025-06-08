@@ -483,7 +483,7 @@ class BlueskyClassifier:
         if not self.model or not self.tokenizer:
             print("Model or tokenizer not available for evaluation. Skipping.")
             return
-        MAX_EVAL_SAMPLES = 10000
+        MAX_EVAL_SAMPLES = 20000
         eval_data_subset = (
             random.sample(eval_data, MAX_EVAL_SAMPLES)
             if len(eval_data) > MAX_EVAL_SAMPLES
@@ -1113,7 +1113,7 @@ def main():
     finetune_parser.add_argument(
         "--test_size",
         type=int,
-        default=10000,
+        default=20000,
         help="Fixed size for test set instead of using ratio",
     )
 
