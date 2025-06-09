@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About - Bluesky Classifier</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <a href="index.html" class="logo">
+      <img src="Bluesky_Logo.png" alt="Bluesky Logo" class="logo-icon">
+      Bluesky Classifier
+    </a>
+    <nav>
+      <a href="how-it-works.html">How It Works</a>
+      <a href="about.html" class="active">About</a>
+    </nav>
+  </header>
+
+  <main class="page-content">
+    <section id="about">
+      <h2 class="section-title">About Our Project</h2>
+      
+      <div class="about-content">
+        <div class="about-description">
+          <p>
+            We built <strong>Bluesky Classifier</strong> as a demonstration of how lightweight machine learning 
+            can analyze social media content in real-time to identify cultural affiliations. Our goal was to create 
+            a playful tool that detects patterns associated with specific online subcultures—specifically "Weeb" 
+            and "Furry" communities—while maintaining a respectful approach to user privacy.
+          </p>
+          <p>
+            All analysis is performed transiently—no user data is stored beyond the immediate classification process. 
+            We believe in transparent algorithms and provide heuristic scores alongside our classifications to 
+            demonstrate how decisions are made.
+          </p>
+          <p>
+            This project is built with privacy in mind. We only access publicly available posts through Bluesky's 
+            official API, and we never store or share any user data beyond what's necessary to display the immediate results.
+          </p>
+        </div>
+        
+        <h2 class="section-title" style="margin-top: 3rem;">Our Team</h2>
+        
+        <div class="team-members">
+          <div class="member-card">
+            <img src="Rifki.jpg" alt="Rifki" class="member-photo">
+            <h3>Rifki Kusmana</h3>
+            <p>2702302851</p>
+            <p>Lead Programmer - MASSIVE furry</p>
+          </div>
+          
+          <div class="member-card">
+            <img src="Imran.jpg" alt="Imran" class="member-photo">
+            <h3>Imran Muhammad Rahmatullah</h3>
+            <p>2702227214</p>
+            <p>Website Creator - Also a massive furry</p>
+          </div>
+          
+          <div class="member-card">
+            <img src="Jeffkins.jpg" alt="Jeffkins" class="member-photo">
+            <h3>Jeffkins Andrew Likadinata</h3>
+            <p>2702255893</p>
+            <p>Website Creator - Normie</p>
+          </div>
+        </div>
+        
+        <div class="about-description">
+          <h3>Contribute to Our Project</h3>
+          <p>
+            Bluesky Classifier is open-source! We welcome contributions from developers, data scientists, 
+            and designers who want to help improve our algorithms or user experience. Visit our GitHub repository 
+            to see our code, report issues, or submit pull requests.
+          </p>
+          <p>
+            You can also connect with us on Bluesky to discuss ideas, report bugs, or just chat about machine 
+            learning and online communities.
+          </p>
+          <div style="text-align: center; margin-top: 2rem;">
+            <a href="https://github.com/spamhamneggs/FinalProjectCOMP6577" class="github-button">
+              <i class="fab fa-github"></i> View on GitHub
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-content">
+      <p>
+        Bluesky Classifier uses machine learning to analyze user posts and
+        detect patterns associated with furry and weeb subcultures. Results
+        are based on algorithmic analysis and may not reflect a user's
+        actual affiliations.
+      </p>
+      <p class="copyright">
+        © 2025 The ""Official"" Bluesky Classifier to catch you in 4k | This is a demo project.
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    // Add smooth scrolling for navigation
+    document.querySelectorAll('nav a').forEach(anchor => {
+      anchor.addEventListener('click', function(e) {
+        if(this.getAttribute('href').startsWith('#')) {
+          e.preventDefault();
+          
+          const targetId = this.getAttribute('href');
+          const targetElement = document.querySelector(targetId);
+          
+          if (targetElement) {
+            window.scrollTo({
+              top: targetElement.offsetTop - 80,
+              behavior: 'smooth'
+            });
+          }
+        }
+      });
+    });
+  </script>
+</body>
+</html>
