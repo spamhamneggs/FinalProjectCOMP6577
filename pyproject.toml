@@ -11,6 +11,7 @@ members = [
  "dataset-scripts",
  "bluesky-user-classifier",
  "terms-analyzer-bertopic",
+ "bluesky-user-classifier-cloud",
 ]
 
 [dependency-groups]
