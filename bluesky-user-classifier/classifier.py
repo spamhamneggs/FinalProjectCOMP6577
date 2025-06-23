@@ -13,7 +13,7 @@ from datasets import Dataset  # type: ignore
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
 import seaborn as sns
-import re
+import regex as re
 import json
 
 # For Bluesky/ATProto
@@ -21,7 +21,12 @@ from atproto import Client  # type: ignore
 
 # For metrics
 from sklearn.model_selection import train_test_split  # type: ignore
-from sklearn.metrics import classification_report, confusion_matrix, mean_squared_error, mean_absolute_error  # type: ignore
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    mean_squared_error,
+    mean_absolute_error,
+)  # type: ignore
 
 # For classification
 from dotenv import load_dotenv
@@ -41,10 +46,38 @@ if torch.cuda.is_available():
 
 def normalize_text(s: str) -> str:
     """
-    Normalize text by collapsing repeated characters and whitespace.
+    Normalize text by removing URLs, emojis, mentions, and collapsing repeated characters.
     """
-    s = re.sub(r"(.)\1{2,}", r"\1\1", s)  # Collapse repeated chars: "soooo" → "soo"
-    s = re.sub(r"\s+", " ", s)  # Collapse whitespace
+    # Remove URLs
+    s = re.sub(r"https?://\S+|www\.\S+", "", s)
+
+    # Remove @mentions
+    s = re.sub(r"@\w+", "", s)
+
+    # Remove emojis (comprehensive pattern)
+    emoji_pattern = re.compile(
+        "["
+        "\U0001f600-\U0001f64f"  # emoticons
+        "\U0001f300-\U0001f5ff"  # symbols & pictographs
+        "\U0001f680-\U0001f6ff"  # transport & map
+        "\U0001f1e0-\U0001f1ff"  # flags
+        "\U00002600-\U000027bf"  # misc symbols
+        "\U0001f900-\U0001f9ff"  # supplemental symbols
+        "\U00002700-\U000027bf"  # dingbats
+        "]+",
+        flags=re.UNICODE,
+    )
+    s = emoji_pattern.sub("", s)
+
+    # Remove numbers and non-letter characters (keep Unicode letters and accents)
+    s = re.sub(r"[^\p{L}\s]", "", s, flags=re.UNICODE)
+
+    # Collapse repeated characters: "soooo" → "soo"
+    s = re.sub(r"(.)\1{2,}", r"\1\1", s)
+
+    # Collapse whitespace and clean up
+    s = re.sub(r"\s+", " ", s)
+
     return s.strip()
 
 
@@ -199,28 +232,20 @@ def process_post_for_training(args) -> Dict[str, Any] | None:
     )
 
     prompt_text_content = str(text)
-    # Enhanced prompt with continuous scores and confidence information
     prompt = (
         "Analyze this Bluesky post using the provided scores. "
-        "Consider the continuous nature of the scores when making classifications. "
         "Respond with:\n"
         "Primary Classification: <label>\n"
         "Secondary Classification: <label>\n"
-        "Primary Confidence: <0.0-1.0>\n"
-        "Secondary Confidence: <0.0-1.0>\n"
         "Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n\n"
         f"Weeb Score: {weeb_score:.6f}\n"
         f"Furry Score: {furry_score:.6f}\n"
-        f"Score Ratio (W/F): {(weeb_score/furry_score if furry_score > 0 else float('inf')):.3f}\n"
-        f"Combined Intensity: {(weeb_score + furry_score):.6f}\n"
-        f"Post Content: {prompt_text_content}"
+        f"Post Content: {prompt_text_content[:300]}"
     )
-    
+
     response = (
         f"Primary Classification: {primary_label}\n"
         f"Secondary Classification: {secondary_label}\n"
-        f"Primary Confidence: {primary_conf:.3f}\n"
-        f"Secondary Confidence: {secondary_conf:.3f}"
     )
 
     return {
@@ -232,7 +257,7 @@ def process_post_for_training(args) -> Dict[str, Any] | None:
         "primary_confidence": primary_conf,
         "secondary_confidence": secondary_conf,
         "combined_intensity": weeb_score + furry_score,
-        "score_ratio": weeb_score / furry_score if furry_score > 0 else float('inf'),
+        "score_ratio": weeb_score / furry_score if furry_score > 0 else float("inf"),
     }
 
 
@@ -240,7 +265,7 @@ class BlueskyClassifier:
     def __init__(
         self,
         model_name="unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
-        batch_size=16,
+        batch_size=8,
         min_threshold_weeb: float = 0.0031,
         min_threshold_furry: float = 0.0034,
         strong_threshold_weeb: float = 0.0047,
@@ -262,8 +287,12 @@ class BlueskyClassifier:
         self.strong_threshold_furry = strong_threshold_furry
 
         print("\n--- Using Continuous Score Classification ---")
-        print(f"  Minimum Thresholds: weeb={self.min_threshold_weeb:.6f}, furry={self.min_threshold_furry:.6f}")
-        print(f"  Strong Thresholds: weeb={self.strong_threshold_weeb:.6f}, furry={self.strong_threshold_furry:.6f}")
+        print(
+            f"  Minimum Thresholds: weeb={self.min_threshold_weeb:.6f}, furry={self.min_threshold_furry:.6f}"
+        )
+        print(
+            f"  Strong Thresholds: weeb={self.strong_threshold_weeb:.6f}, furry={self.strong_threshold_furry:.6f}"
+        )
         print("  Classification: Based on continuous scores and learned boundaries")
         print("---------------------------------------------\n")
 
@@ -349,6 +378,7 @@ class BlueskyClassifier:
                 load_in_4bit=False,
                 device_map="auto",
             )
+            self.model.gradient_checkpointing_enable()
 
             # Force left padding more aggressively
             self.tokenizer.padding_side = "left"
@@ -456,13 +486,273 @@ class BlueskyClassifier:
         )
         return all_prepared_data
 
+    def _create_balanced_eval_set(self, all_prepared_data, test_size):
+        """Create a truly balanced evaluation set."""
+        from collections import defaultdict
+
+        # Group by label
+        label_groups = defaultdict(list)
+        for item in all_prepared_data:
+            label_groups[item["true_label_heuristic"]].append(item)
+
+        # Remove empty groups
+        label_groups = {k: v for k, v in label_groups.items() if v}
+
+        if not label_groups:
+            return []
+
+        # Calculate samples per class for balanced distribution
+        num_classes = len(label_groups)
+        samples_per_class = test_size // num_classes
+        remainder = test_size % num_classes
+
+        eval_samples = []
+
+        # Sample equally from each class
+        for i, (label, items) in enumerate(sorted(label_groups.items())):
+            current_class_size = samples_per_class + (1 if i < remainder else 0)
+            if len(items) >= current_class_size:
+                eval_samples.extend(random.sample(items, current_class_size))
+            else:
+                eval_samples.extend(items)
+                needed = current_class_size - len(items)
+                if needed > 0:
+                    oversampled = random.choices(items, k=needed)
+                    eval_samples.extend(oversampled)
+
+        random.shuffle(eval_samples)
+        return eval_samples[:test_size]
+
+    def _create_balanced_training_set(
+        self, train_data_dicts, max_samples_per_class=None
+    ):
+        """Create balanced training set using oversampling/downsampling."""
+        from collections import defaultdict
+
+        # Group by label
+        label_groups = defaultdict(list)
+        for item in train_data_dicts:
+            label_groups[item["true_label_heuristic"]].append(item)
+
+        # Remove empty groups
+        label_groups = {k: v for k, v in label_groups.items() if v}
+
+        if not label_groups:
+            return train_data_dicts
+
+        # Find target size (use largest class size or specified max)
+        class_sizes = [len(items) for items in label_groups.values()]
+        if max_samples_per_class is None:
+            target_size = max(class_sizes)
+        else:
+            target_size = min(max_samples_per_class, max(class_sizes))
+
+        print(f"Balancing {len(label_groups)} classes to {target_size} samples each")
+
+        balanced_data = []
+
+        for label, items in label_groups.items():
+            original_size = len(items)
+            if original_size >= target_size:
+                sampled_items = random.sample(items, target_size)
+            else:
+                sampled_items = items.copy()
+                needed = target_size - original_size
+                oversampled = random.choices(items, k=needed)
+                sampled_items.extend(oversampled)
+            balanced_data.extend(sampled_items)
+            print(f"  {label}: {original_size} -> {len(sampled_items)} samples")
+
+        random.shuffle(balanced_data)
+        print(f"Total balanced training samples: {len(balanced_data)}")
+        return balanced_data
+
+    def finetune_model(
+        self,
+        training_data_csv: str,
+        output_dir: str = "output/user-classifier",
+        epochs: int = 3,
+        learning_rate: float = 5e-5,
+        eval_split_size: float = 0.20,
+        skip_eval_after_train: bool = False,
+        max_training_samples: int = None,
+        test_size: int = None,
+    ):
+        """Fine-tune the model on continuous scoring data."""
+        if self.model is None or self.tokenizer is None:
+            try:
+                self.setup_model(self.model_name)
+                self._setup_peft_adapters()
+            except RuntimeError as e:
+                print(f"Failed to setup base model for fine-tuning: {e}")
+                return None
+
+        all_prepared_data = self._prepare_data_from_csv(training_data_csv)
+        if not all_prepared_data:
+            print("No training data prepared. Skipping fine-tuning.")
+            return None
+
+        # --- Improved split and balancing logic ---
+        if len(all_prepared_data) > 1:
+            if test_size:
+                # Create balanced eval set first
+                eval_data_dicts = self._create_balanced_eval_set(
+                    all_prepared_data, test_size
+                )
+                eval_ids = {id(item) for item in eval_data_dicts}
+                train_data_dicts = [
+                    item for item in all_prepared_data if id(item) not in eval_ids
+                ]
+            else:
+                try:
+                    labels_for_stratification = [
+                        item["true_label_heuristic"] for item in all_prepared_data
+                    ]
+                    train_data_dicts, eval_data_dicts = train_test_split(
+                        all_prepared_data,
+                        test_size=eval_split_size,
+                        random_state=RANDOM_SEED,
+                        stratify=labels_for_stratification,
+                    )
+                except ValueError:
+                    train_data_dicts, eval_data_dicts = train_test_split(
+                        all_prepared_data,
+                        test_size=eval_split_size,
+                        random_state=RANDOM_SEED,
+                    )
+        else:
+            train_data_dicts, eval_data_dicts = all_prepared_data, []
+
+        print(
+            f"Training with {len(train_data_dicts)} samples, evaluating with {len(eval_data_dicts)} samples."
+        )
+
+        if not train_data_dicts:
+            print(
+                "No training samples available after splitting. Aborting fine-tuning."
+            )
+            return None
+
+        # --- Apply class balancing instead of intensity balancing ---
+        if len(train_data_dicts) > 100000:
+            max_per_class = 50000  # Limit to prevent memory issues with 6M dataset
+            train_data_dicts = self._create_balanced_training_set(
+                train_data_dicts, max_samples_per_class=max_per_class
+            )
+        else:
+            train_data_dicts = self._create_balanced_training_set(train_data_dicts)
+
+        # Optionally limit to max_training_samples if set
+        if max_training_samples and len(train_data_dicts) > max_training_samples:
+            from collections import defaultdict
+
+            label_groups = defaultdict(list)
+            for item in train_data_dicts:
+                label_groups[item["true_label_heuristic"]].append(item)
+            num_classes = len(label_groups)
+            samples_per_class = max_training_samples // num_classes
+            trimmed = []
+            for items in label_groups.values():
+                trimmed.extend(random.sample(items, samples_per_class))
+            train_data_dicts = trimmed
+            print(f"Trimmed balanced training set to {len(train_data_dicts)} samples.")
+
+        sft_train_dataset = Dataset.from_list(
+            [
+                {"prompt": d["prompt"], "response": d["response"]}
+                for d in train_data_dicts
+            ]
+        )
+        eos_token = self.tokenizer.eos_token
+
+        def formatting_func(example):
+            return [
+                f"<|user|>\n{prompt}\n<|assistant|>\n{response}{eos_token}"
+                for prompt, response in zip(example["prompt"], example["response"])
+            ]
+
+        sft_config = SFTConfig(
+            completion_only_loss=False,
+            output_dir=output_dir,
+            num_train_epochs=epochs,
+            per_device_train_batch_size=self.batch_size,
+            gradient_checkpointing=True,
+            gradient_accumulation_steps=4,
+            learning_rate=learning_rate,
+            weight_decay=0.01,
+            warmup_ratio=0.1,
+            lr_scheduler_type="cosine",
+            max_grad_norm=0.3,
+            logging_steps=500,
+            save_strategy="epoch",
+            dataset_num_proc=1,
+            dataloader_num_workers=4,
+            save_total_limit=1,
+            remove_unused_columns=True,
+            report_to="none",
+            max_seq_length=300,
+            packing=False,
+            optim="adamw_bnb_8bit",
+            fp16=torch.cuda.is_available()
+            and not (
+                hasattr(torch.cuda, "is_bf16_supported")
+                and torch.cuda.is_bf16_supported()
+            ),
+            bf16=torch.cuda.is_available()
+            and hasattr(torch.cuda, "is_bf16_supported")
+            and torch.cuda.is_bf16_supported(),
+            dataloader_pin_memory=False,
+            group_by_length=True,
+            label_smoothing_factor=0.1,  # Helps with class imbalance
+        )
+
+        trainer = SFTTrainer(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            args=sft_config,
+            train_dataset=sft_train_dataset,
+            formatting_func=formatting_func,
+        )
+
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        print("Starting model fine-tuning with continuous scoring...")
+        try:
+            trainer.train()
+            print(f"Saving fine-tuned model (adapters) to {output_dir}")
+            trainer.save_model(output_dir)
+            self.tokenizer.save_pretrained(output_dir)
+        except Exception as e:
+            print(f"Error during training or saving model: {e}")
+            if "CUDA out of memory" in str(e):
+                print(
+                    "CUDA out of memory. Try reducing batch_size, max_seq_length, or increasing gradient_accumulation_steps."
+                )
+            return None
+
+        if not skip_eval_after_train and eval_data_dicts:
+            print("Evaluating model after fine-tuning...")
+            eval_metrics_dir = os.path.join(
+                "metrics",
+                os.path.basename(output_dir),
+            )
+            self._evaluate_model_and_print_metrics(eval_data_dicts, eval_metrics_dir)
+        elif skip_eval_after_train:
+            print("Skipping evaluation after training as requested.")
+        else:
+            print(
+                "Skipping evaluation as no evaluation data was prepared/available from the split."
+            )
+        return output_dir
+
     def _parse_combined_label_and_confidence_from_text(
         self, text: str, source_type: str = "unknown source"
     ) -> Tuple[str, float, float]:
         """Parse both classification labels and confidence scores from model output."""
         primary, secondary = "Unknown", "Unknown"
         primary_conf, secondary_conf = 0.0, 0.0
-        
+
         for line in text.splitlines():
             line_lower = line.lower()
             if "primary classification:" in line_lower:
@@ -483,14 +773,14 @@ class BlueskyClassifier:
                     secondary_conf = float(line.split(":", 1)[1].strip())
                 except (ValueError, IndexError):
                     secondary_conf = 0.0
-        
+
         if primary != "Unknown" and secondary == "Unknown":
             secondary = "None"
         if primary == "Normie":
             secondary = "None"
         if primary == "Unknown":
             secondary = "Unknown"
-        
+
         combined_label = f"{primary}-{secondary}"
         return combined_label, primary_conf, secondary_conf
 
@@ -500,7 +790,7 @@ class BlueskyClassifier:
         if not self.model or not self.tokenizer:
             print("Model or tokenizer not available for evaluation. Skipping.")
             return
-        
+
         MAX_EVAL_SAMPLES = 20000
         eval_data_subset = (
             random.sample(eval_data, MAX_EVAL_SAMPLES)
@@ -515,7 +805,7 @@ class BlueskyClassifier:
         y_true_primary_conf, y_pred_primary_conf = [], []
         y_true_secondary_conf, y_pred_secondary_conf = [], []
         y_true_weeb_scores, y_true_furry_scores = [], []
-        
+
         self.model.to(self.device)
         num_batches = math.ceil(len(eval_data_subset) / self.batch_size)
 
@@ -531,10 +821,12 @@ class BlueskyClassifier:
             prompts = [f"<|user|>\n{item['prompt']}\n<|assistant|>" for item in batch]
             true_labels = [item["true_label_heuristic"] for item in batch]
             true_primary_confs = [item.get("primary_confidence", 0.0) for item in batch]
-            true_secondary_confs = [item.get("secondary_confidence", 0.0) for item in batch]
+            true_secondary_confs = [
+                item.get("secondary_confidence", 0.0) for item in batch
+            ]
             true_weeb_scores = [item.get("weeb_score", 0.0) for item in batch]
             true_furry_scores = [item.get("furry_score", 0.0) for item in batch]
-            
+
             # Force left padding right before tokenization
             self.tokenizer.padding_side = "left"
             inputs = self.tokenizer(
@@ -544,7 +836,7 @@ class BlueskyClassifier:
                 max_length=getattr(self.tokenizer, "model_max_length", 2048) - 100,
                 padding=True,
             ).to(self.device)
-            
+
             with torch.no_grad():
                 outputs = self.model.generate(
                     input_ids=inputs.input_ids,
@@ -557,20 +849,31 @@ class BlueskyClassifier:
                     top_p=None,
                     top_k=None,
                 )
-            
+
             for i in range(len(batch)):
                 input_len = inputs.input_ids[i].shape[0]
                 generated_tokens = outputs[i][input_len:]
                 model_response_part = self.tokenizer.decode(
                     generated_tokens, skip_special_tokens=True
                 ).strip()
-                
+
+                # DEBUG: Print first few responses
+                if batch_idx == 0 and i < 3:
+                    print(f"\n=== DEBUG SAMPLE {i} ===")
+                    print(f"Prompt: {batch[i]['prompt'][:200]}...")
+                    print(f"Model response: '{model_response_part}'")
+                    print(f"True label: {true_labels[i]}")
+
                 predicted_label, pred_primary_conf, pred_secondary_conf = (
                     self._parse_combined_label_and_confidence_from_text(
                         model_response_part, "evaluation output"
                     )
                 )
-                
+
+                if batch_idx == 0 and i < 3:
+                    print(f"Parsed label: {predicted_label}")
+                    print("=" * 30)
+
                 y_true_combined.append(true_labels[i])
                 y_pred_combined.append(predicted_label)
                 y_true_primary_conf.append(true_primary_confs[i])
@@ -586,11 +889,11 @@ class BlueskyClassifier:
         report_labels = sorted(
             list(set(self.defined_combined_labels + current_labels_in_data))
         )
-        
+
         if not os.path.exists(metrics_output_dir):
             os.makedirs(metrics_output_dir)
             print(f"Created metrics directory: {metrics_output_dir}")
-        
+
         report_str = classification_report(
             y_true_combined,
             y_pred_combined,
@@ -599,17 +902,25 @@ class BlueskyClassifier:
             target_names=report_labels,
         )
         print(report_str)
-        
+
         # Regression metrics for confidence scores
         print("\n--- Confidence Score Regression Metrics ---")
         primary_conf_mse = mean_squared_error(y_true_primary_conf, y_pred_primary_conf)
         primary_conf_mae = mean_absolute_error(y_true_primary_conf, y_pred_primary_conf)
-        secondary_conf_mse = mean_squared_error(y_true_secondary_conf, y_pred_secondary_conf)
-        secondary_conf_mae = mean_absolute_error(y_true_secondary_conf, y_pred_secondary_conf)
-        
-        print(f"Primary Confidence - MSE: {primary_conf_mse:.4f}, MAE: {primary_conf_mae:.4f}")
-        print(f"Secondary Confidence - MSE: {secondary_conf_mse:.4f}, MAE: {secondary_conf_mae:.4f}")
-        
+        secondary_conf_mse = mean_squared_error(
+            y_true_secondary_conf, y_pred_secondary_conf
+        )
+        secondary_conf_mae = mean_absolute_error(
+            y_true_secondary_conf, y_pred_secondary_conf
+        )
+
+        print(
+            f"Primary Confidence - MSE: {primary_conf_mse:.4f}, MAE: {primary_conf_mae:.4f}"
+        )
+        print(
+            f"Secondary Confidence - MSE: {secondary_conf_mse:.4f}, MAE: {secondary_conf_mae:.4f}"
+        )
+
         # Save comprehensive report
         report_path = os.path.join(metrics_output_dir, "comprehensive_report.txt")
         try:
@@ -617,46 +928,52 @@ class BlueskyClassifier:
                 f.write("=== Classification Report ===\n")
                 f.write(report_str)
                 f.write("\n\n=== Confidence Score Metrics ===\n")
-                f.write(f"Primary Confidence - MSE: {primary_conf_mse:.4f}, MAE: {primary_conf_mae:.4f}\n")
-                f.write(f"Secondary Confidence - MSE: {secondary_conf_mse:.4f}, MAE: {secondary_conf_mae:.4f}\n")
+                f.write(
+                    f"Primary Confidence - MSE: {primary_conf_mse:.4f}, MAE: {primary_conf_mae:.4f}\n"
+                )
+                f.write(
+                    f"Secondary Confidence - MSE: {secondary_conf_mse:.4f}, MAE: {secondary_conf_mae:.4f}\n"
+                )
             print(f"Comprehensive report saved to {report_path}")
         except Exception as e:
             print(f"Error saving comprehensive report: {e}")
 
         # Visualization: Confidence scores vs true scores
         plt.figure(figsize=(15, 5))
-        
+
         # Primary confidence correlation
         plt.subplot(1, 3, 1)
         plt.scatter(y_true_primary_conf, y_pred_primary_conf, alpha=0.6)
-        plt.plot([0, 1], [0, 1], 'r--', lw=2)
-        plt.xlabel('True Primary Confidence')
-        plt.ylabel('Predicted Primary Confidence')
-        plt.title('Primary Confidence Prediction')
+        plt.plot([0, 1], [0, 1], "r--", lw=2)
+        plt.xlabel("True Primary Confidence")
+        plt.ylabel("Predicted Primary Confidence")
+        plt.title("Primary Confidence Prediction")
         plt.grid(True, alpha=0.3)
-        
+
         # Secondary confidence correlation
         plt.subplot(1, 3, 2)
         plt.scatter(y_true_secondary_conf, y_pred_secondary_conf, alpha=0.6)
-        plt.plot([0, 1], [0, 1], 'r--', lw=2)
-        plt.xlabel('True Secondary Confidence')
-        plt.ylabel('Predicted Secondary Confidence')
-        plt.title('Secondary Confidence Prediction')
+        plt.plot([0, 1], [0, 1], "r--", lw=2)
+        plt.xlabel("True Secondary Confidence")
+        plt.ylabel("Predicted Secondary Confidence")
+        plt.title("Secondary Confidence Prediction")
         plt.grid(True, alpha=0.3)
-        
+
         # Score distribution
         plt.subplot(1, 3, 3)
         plt.scatter(y_true_weeb_scores, y_true_furry_scores, alpha=0.6, s=20)
-        plt.xlabel('Weeb Score')
-        plt.ylabel('Furry Score')
-        plt.title('Score Distribution')
+        plt.xlabel("Weeb Score")
+        plt.ylabel("Furry Score")
+        plt.title("Score Distribution")
         plt.grid(True, alpha=0.3)
-        
+
         plt.tight_layout()
-        
-        confidence_plot_path = os.path.join(metrics_output_dir, "confidence_analysis.png")
+
+        confidence_plot_path = os.path.join(
+            metrics_output_dir, "confidence_analysis.png"
+        )
         try:
-            plt.savefig(confidence_plot_path, dpi=150, bbox_inches='tight')
+            plt.savefig(confidence_plot_path, dpi=150, bbox_inches="tight")
             print(f"Confidence analysis plot saved to {confidence_plot_path}")
         except Exception as e:
             print(f"Error saving confidence plot: {e}")
@@ -686,7 +1003,7 @@ class BlueskyClassifier:
         plt.xticks(rotation=45, ha="right", fontsize=8)
         plt.yticks(rotation=0, fontsize=8)
         plt.tight_layout()
-        
+
         cm_path = os.path.join(metrics_output_dir, "confusion_matrix_combined.png")
         try:
             plt.savefig(cm_path)
@@ -694,226 +1011,6 @@ class BlueskyClassifier:
         except Exception as e:
             print(f"Error saving confusion matrix: {e}")
         plt.close()
-    
-    # In your finetune_model method, replace the current sampling logic:
-    def _create_balanced_eval_set(self, all_prepared_data, test_size):
-        """Create a balanced evaluation set that includes rare categories."""
-        from collections import defaultdict
-        
-        # Group by label
-        label_groups = defaultdict(list)
-        for item in all_prepared_data:
-            label_groups[item["true_label_heuristic"]].append(item)
-        
-        eval_samples = []
-        remaining_slots = test_size
-        
-        # First, ensure we get at least some samples from each category
-        min_per_category = min(10, remaining_slots // len(label_groups))
-        
-        for label, items in label_groups.items():
-            if remaining_slots <= 0:
-                break
-            sample_count = min(min_per_category, len(items), remaining_slots)
-            eval_samples.extend(random.sample(items, sample_count))
-            remaining_slots -= sample_count
-        
-        # Fill remaining slots proportionally
-        if remaining_slots > 0:
-            remaining_items = [item for item in all_prepared_data if item not in eval_samples]
-            if remaining_items:
-                additional_samples = random.sample(remaining_items, min(remaining_slots, len(remaining_items)))
-                eval_samples.extend(additional_samples)
-        
-        return eval_samples
-
-    def finetune_model(
-        self,
-        training_data_csv: str,
-        output_dir: str = "output/user-classifier",
-        epochs: int = 3,
-        learning_rate: float = 2e-4,
-        eval_split_size: float = 0.20,
-        skip_eval_after_train: bool = False,
-        max_training_samples: int = None,
-        test_size: int = None,
-    ):
-        """Fine-tune the model on continuous scoring data."""
-        if self.model is None or self.tokenizer is None:
-            try:
-                self.setup_model(self.model_name)
-                self._setup_peft_adapters()
-            except RuntimeError as e:
-                print(f"Failed to setup base model for fine-tuning: {e}")
-                return None
-
-        all_prepared_data = self._prepare_data_from_csv(training_data_csv)
-        if not all_prepared_data:
-            print("No training data prepared. Skipping fine-tuning.")
-            return None
-
-        # Split data logic (same as before but with continuous features)
-        if (
-            max_training_samples
-            and test_size
-            and len(all_prepared_data) >= (max_training_samples + test_size)
-        ):
-            total_samples = max_training_samples + test_size
-            print(
-                f"Sampling exactly {max_training_samples} train and {test_size} eval examples from {len(all_prepared_data)} total examples"
-            )
-            sampled_data = random.sample(all_prepared_data, total_samples)
-            random.shuffle(sampled_data)
-            # Use balanced eval set for evaluation
-            eval_data_dicts = self._create_balanced_eval_set(sampled_data, test_size)
-            # Remove eval samples from training set
-            train_data_dicts = [item for item in sampled_data if item not in eval_data_dicts]
-            skip_eval_after_train = False
-        else:
-            labels_for_stratification = [
-                item["true_label_heuristic"] for item in all_prepared_data
-            ]
-
-            if len(all_prepared_data) > 1:
-                if test_size:
-                    # Use balanced eval set for evaluation
-                    eval_data_dicts = self._create_balanced_eval_set(all_prepared_data, test_size)
-                    train_data_dicts = [item for item in all_prepared_data if item not in eval_data_dicts]
-                else:
-                    train_data_dicts, eval_data_dicts = train_test_split(
-                        all_prepared_data,
-                        test_size=eval_split_size,
-                        random_state=RANDOM_SEED,
-                        stratify=labels_for_stratification,
-                    )
-            else:
-                try:
-                    train_data_dicts, eval_data_dicts = train_test_split(
-                        all_prepared_data,
-                        test_size=eval_split_size,
-                        random_state=RANDOM_SEED,
-                        stratify=labels_for_stratification,
-                    )
-                except ValueError:
-                    train_data_dicts, eval_data_dicts = train_test_split(
-                        all_prepared_data,
-                        test_size=eval_split_size,
-                        random_state=RANDOM_SEED,
-                    )
-
-        print(
-            f"Training with {len(train_data_dicts)} samples, evaluating with {len(eval_data_dicts)} samples."
-        )
-
-        if not train_data_dicts:
-            print(
-                "No training samples available after splitting. Aborting fine-tuning."
-            )
-            return None
-
-        # Weighted sampling based on combined intensity (continuous approach)
-        intensities = [ex.get("combined_intensity", 0.0) for ex in train_data_dicts]
-        # Weight by inverse intensity to balance high and low scoring posts
-        max_intensity = max(intensities) if intensities else 1.0
-        sample_weights = [
-            (max_intensity - intensity + 0.001) / (max_intensity + 0.001)
-            for intensity in intensities
-        ]
-        
-        n_samples = len(train_data_dicts)
-        indices = random.choices(range(n_samples), weights=sample_weights, k=n_samples)
-        intensity_balanced_train_data = [train_data_dicts[i] for i in indices]
-
-        sft_train_dataset = Dataset.from_list(
-            [
-                {"prompt": d["prompt"], "response": d["response"]}
-                for d in intensity_balanced_train_data
-            ]
-        )
-        eos_token = self.tokenizer.eos_token
-
-        def formatting_func(example):
-            return [
-                f"<|user|>\n{prompt}\n<|assistant|>\n{response}{eos_token}"
-                for prompt, response in zip(example["prompt"], example["response"])
-            ]
-
-        sft_config = SFTConfig(
-            completion_only_loss=False,
-            output_dir=output_dir,
-            num_train_epochs=epochs,
-            per_device_train_batch_size=self.batch_size,
-            gradient_accumulation_steps=2,
-            learning_rate=learning_rate,
-            weight_decay=0.01,
-            warmup_ratio=0.1,
-            lr_scheduler_type="cosine",
-            max_grad_norm=0.3,
-            logging_steps=500,
-            save_strategy="epoch",
-            dataset_num_proc=1,
-            dataloader_num_workers=4,
-            save_total_limit=1,
-            remove_unused_columns=True,
-            report_to="none",
-            max_seq_length=300,  # Increased for confidence outputs
-            packing=False,
-            optim="adamw_bnb_8bit",
-            fp16=torch.cuda.is_available()
-            and not (
-                hasattr(torch.cuda, "is_bf16_supported")
-                and torch.cuda.is_bf16_supported()
-            ),
-            bf16=torch.cuda.is_available()
-            and hasattr(torch.cuda, "is_bf16_supported")
-            and torch.cuda.is_bf16_supported(),
-            dataloader_pin_memory=False,
-            group_by_length=True,
-        )
-        
-        trainer = SFTTrainer(
-            model=self.model,
-            tokenizer=self.tokenizer,
-            args=sft_config,
-            train_dataset=sft_train_dataset,
-            formatting_func=formatting_func,
-        )
-        
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        print("Starting model fine-tuning with continuous scoring...")
-        try:
-            trainer.train()
-            print(f"Saving fine-tuned model (adapters) to {output_dir}")
-            trainer.save_model(output_dir)
-            self.tokenizer.save_pretrained(output_dir)
-        except Exception as e:
-            print(f"Error during training or saving model: {e}")
-            if "CUDA out of memory" in str(e):
-                print(
-                    "CUDA out of memory. Try reducing batch_size, max_seq_length, or increasing gradient_accumulation_steps."
-                )
-            return None
-
-        if not skip_eval_after_train and eval_data_dicts:
-            print("Evaluating model after fine-tuning...")
-            metrics_parent_dir = (
-                os.path.dirname(output_dir) if os.path.dirname(output_dir) else "."
-            )
-            eval_metrics_dir = os.path.join(
-                metrics_parent_dir,
-                "metrics_after_finetune",
-                os.path.basename(output_dir),
-            )
-            self._evaluate_model_and_print_metrics(eval_data_dicts, eval_metrics_dir)
-        elif skip_eval_after_train:
-            print("Skipping evaluation after training as requested.")
-        else:
-            print(
-                "Skipping evaluation as no evaluation data was prepared/available from the split."
-            )
-        return output_dir
 
     def load_finetuned_model(self, model_path: str):
         print(f"Attempting to load fine-tuned model from {model_path}")
@@ -1020,18 +1117,13 @@ class BlueskyClassifier:
 
             prompt = (
                 f"<|user|>\nAnalyze this Bluesky post using the provided scores. "
-                f"Consider the continuous nature of the scores when making classifications. "
                 f"Respond with:\n"
                 f"Primary Classification: <label>\n"
                 f"Secondary Classification: <label>\n"
-                f"Primary Confidence: <0.0-1.0>\n"
-                f"Secondary Confidence: <0.0-1.0>\n"
                 f"Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n\n"
                 f"Weeb Score: {post_weeb_score:.6f}\n"
                 f"Furry Score: {post_furry_score:.6f}\n"
-                f"Score Ratio (W/F): {(post_weeb_score/post_furry_score if post_furry_score > 0 else float('inf')):.3f}\n"
-                f"Combined Intensity: {(post_weeb_score + post_furry_score):.6f}\n"
-                f"Post Content: {post_text}\n<|assistant|>"
+                f"Post Content: {post_text[:300]}\n<|assistant|>"
             )
             prompts_for_model.append(prompt)
 
@@ -1059,7 +1151,7 @@ class BlueskyClassifier:
                     max_length=max_input_length,
                     padding=True,
                 ).to(self.device)
-                
+
                 with torch.no_grad():
                     outputs = self.model.generate(
                         input_ids=inputs.input_ids,
@@ -1072,36 +1164,35 @@ class BlueskyClassifier:
                         top_p=None,
                         top_k=None,
                     )
-                
+
                 for i in range(len(batch_prompts)):
                     input_ids_length = inputs.input_ids[i].shape[0]
                     model_response_part = self.tokenizer.decode(
                         outputs[i][input_ids_length:], skip_special_tokens=True
                     ).strip()
-                    
+
                     predicted_combined, pred_primary_conf, pred_secondary_conf = (
                         self._parse_combined_label_and_confidence_from_text(
                             model_response_part, "model output for user classification"
                         )
                     )
-                    
-                    model_predictions.append({
-                        "label": predicted_combined,
-                        "primary_confidence": pred_primary_conf,
-                        "secondary_confidence": pred_secondary_conf,
-                    })
+
+                    model_predictions.append(
+                        {
+                            "label": predicted_combined,
+                            "primary_confidence": pred_primary_conf,
+                            "secondary_confidence": pred_secondary_conf,
+                        }
+                    )
 
         # Aggregate results using continuous approach
         final_primary_classification = "Normie"
         final_secondary_classification = "None"
-        final_primary_confidence = 1.0
-        final_secondary_confidence = 0.0
 
         if model_predictions:
             # Filter out "Unknown-Unknown" predictions
             valid_predictions = [
-                pred for pred in model_predictions
-                if pred["label"] != "Unknown-Unknown"
+                pred for pred in model_predictions if pred["label"] != "Unknown-Unknown"
             ]
 
             if valid_predictions:
@@ -1110,32 +1201,27 @@ class BlueskyClassifier:
                     (pred["label"], pred["primary_confidence"])
                     for pred in valid_predictions
                 ]
-                
+
                 # Find the most confident prediction
                 best_prediction = max(label_confidence_pairs, key=lambda x: x[1])
                 most_common_combined = best_prediction[0]
-                
+
                 if "-" in most_common_combined:
                     parsed_labels = most_common_combined.split("-", 1)
                     if len(parsed_labels) == 2:
-                        final_primary_classification, final_secondary_classification = parsed_labels
+                        final_primary_classification, final_secondary_classification = (
+                            parsed_labels
+                        )
                     else:
                         final_primary_classification = parsed_labels[0]
                         final_secondary_classification = "None"
                 else:
                     final_primary_classification = most_common_combined
                     final_secondary_classification = "None"
-                
-                # Calculate average confidence for this label
-                same_label_preds = [p for p in valid_predictions if p["label"] == most_common_combined]
-                final_primary_confidence = np.mean([p["primary_confidence"] for p in same_label_preds])
-                final_secondary_confidence = np.mean([p["secondary_confidence"] for p in same_label_preds])
 
         return {
             "primary_classification": final_primary_classification,
             "secondary_classification": final_secondary_classification,
-            "primary_confidence": final_primary_confidence,
-            "secondary_confidence": final_secondary_confidence,
             "average_weeb_score": np.mean(weeb_scores) if weeb_scores else 0.0,
             "average_furry_score": np.mean(furry_scores) if furry_scores else 0.0,
             "score_distribution": {
@@ -1217,10 +1303,10 @@ def main():
         "--epochs", type=int, default=3, help="Training epochs"
     )
     finetune_parser.add_argument(
-        "--batch_size", type=int, default=16, help="Training batch size"
+        "--batch_size", type=int, default=8, help="Training batch size"
     )
     finetune_parser.add_argument(
-        "--learning_rate", type=float, default=2e-4, help="Learning rate"
+        "--learning_rate", type=float, default=5e-5, help="Learning rate"
     )
     finetune_parser.add_argument(
         "--eval_split_size", type=float, default=0.2, help="Validation split size"
@@ -1339,7 +1425,7 @@ def main():
         help="Your Bluesky login password",
     )
     classify_parser.add_argument(
-        "--batch_size", type=int, default=8, help="Model classification batch size"
+        "--batch_size", type=int, default=16, help="Model classification batch size"
     )
     classify_parser.add_argument(
         "--min_threshold_weeb",
@@ -1410,9 +1496,16 @@ def main():
                 # --- Class balancing for evaluation ---
                 if eval_prepared_data:
                     # Limit to test_size if provided
-                    if args.test_size is not None and len(eval_prepared_data) > args.test_size:
-                        eval_prepared_data = random.sample(eval_prepared_data, k=args.test_size)
-                        print(f"Randomly sampled {args.test_size} evaluation samples after balancing.")
+                    if (
+                        args.test_size is not None
+                        and len(eval_prepared_data) > args.test_size
+                    ):
+                        eval_prepared_data = random.sample(
+                            eval_prepared_data, k=args.test_size
+                        )
+                        print(
+                            f"Randomly sampled {args.test_size} evaluation samples after balancing."
+                        )
 
                 if eval_prepared_data:
                     classifier._evaluate_model_and_print_metrics(
@@ -1453,6 +1546,7 @@ def main():
                 # Calculate prediction distribution
                 if result.get("model_predictions"):
                     from collections import Counter
+
                     pred_counts = Counter(
                         [p["label"] for p in result["model_predictions"]]
                     )
@@ -1470,9 +1564,7 @@ def main():
                             {
                                 "label": pred,
                                 "count": count,
-                                "percentage": round(
-                                    (count / total_preds) * 100, 2
-                                ),
+                                "percentage": round((count / total_preds) * 100, 2),
                                 "average_confidence": round(avg_conf, 4),
                             }
                         )
@@ -1499,7 +1591,7 @@ def main():
                 # We don't need the raw list of scores in the final JSON
                 # as it can be very large. The summary is more useful.
                 del result["score_distribution"]
-                del result["model_predictions"] # Also potentially very large
+                del result["model_predictions"]  # Also potentially very large
 
                 # --- Print the final result as a JSON object ---
                 print(json.dumps(result, indent=2))

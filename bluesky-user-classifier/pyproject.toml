@@ -19,6 +19,7 @@ dependencies = [
     "datasets>=3.3.2",
     "bitsandbytes>=0.45.5",
     "python-dotenv>=1.1.0",
+    "regex>=2024.11.6",
 ]
 
 [tool.uv.sources]

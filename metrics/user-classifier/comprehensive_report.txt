@@ -1,0 +1,22 @@
+=== Classification Report ===
+                   precision    recall  f1-score   support
+
+       Furry-None       0.95      0.96      0.96       556
+Furry-Slight Weeb       0.85      0.97      0.91       556
+       Furry-Weeb       1.00      0.92      0.96       556
+      Normie-None       1.00      0.98      0.99       556
+Slight Furry-None       0.99      0.91      0.95       556
+ Slight Weeb-None       0.90      0.99      0.94       555
+  Unknown-Unknown       0.00      0.00      0.00         0
+       Weeb-Furry       0.98      0.91      0.94       555
+        Weeb-None       0.93      0.85      0.89       555
+Weeb-Slight Furry       0.89      0.92      0.91       555
+
+         accuracy                           0.94      5000
+        macro avg       0.85      0.84      0.85      5000
+     weighted avg       0.95      0.94      0.94      5000
+
+
+=== Confidence Score Metrics ===
+Primary Confidence - MSE: 0.1314, MAE: 0.2310
+Secondary Confidence - MSE: 0.0079, MAE: 0.0499
