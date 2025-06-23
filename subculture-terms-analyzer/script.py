@@ -13,7 +13,7 @@ from nltk.tokenize import word_tokenize
 from scipy.stats import entropy
 from sklearn.decomposition import LatentDirichletAllocation, MiniBatchNMF
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import silhouette_score, davies_bouldin_score
+from sklearn.metrics import davies_bouldin_score, silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler

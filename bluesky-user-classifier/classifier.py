@@ -1,35 +1,36 @@
 #!/usr/bin/env python3
-import os
-import sys
-import random
 import argparse
-import pandas as pd
-import numpy as np
-import math
-from typing import List, Dict, Any, Tuple
-from tqdm import tqdm
-import torch
-from datasets import Dataset  # type: ignore
-from multiprocessing import Pool, cpu_count
-import matplotlib.pyplot as plt
-import seaborn as sns
-import regex as re
 import json
+import math
+import os
+import random
+import sys
+from multiprocessing import Pool, cpu_count
+from typing import Any, Dict, List, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import regex as re
+import seaborn as sns
+import torch
 
 # For Bluesky/ATProto
 from atproto import Client  # type: ignore
-
-# For metrics
-from sklearn.model_selection import train_test_split  # type: ignore
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    mean_squared_error,
-    mean_absolute_error,
-)  # type: ignore
+from datasets import Dataset  # type: ignore
 
 # For classification
 from dotenv import load_dotenv
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    mean_absolute_error,
+    mean_squared_error,
+)  # type: ignore
+
+# For metrics
+from sklearn.model_selection import train_test_split  # type: ignore
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -1613,7 +1614,7 @@ if __name__ == "__main__":
         )
         sys.exit(1)
     try:
-        from trl import SFTTrainer, SFTConfig
+        from trl import SFTConfig, SFTTrainer
     except ImportError:
         print("Error: TRL library not found. Please install with 'pip install trl'.")
         sys.exit(1)

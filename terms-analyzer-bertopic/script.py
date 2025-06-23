@@ -7,22 +7,22 @@ import nltk
 import numpy as np
 import pandas as pd
 import torch
-from umap import UMAP
-from nltk.tokenize import word_tokenize
-from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
-from sklearn.metrics import silhouette_score, davies_bouldin_score
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.neighbors import NearestNeighbors
-from hdbscan import HDBSCAN, approximate_predict
-from joblib import Memory
 
 # BERTopic imports
 from bertopic import BERTopic
 from bertopic.vectorizers import OnlineCountVectorizer
+from hdbscan import HDBSCAN, approximate_predict
+from joblib import Memory
+from nltk.tokenize import word_tokenize
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import MiniBatchKMeans
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.metrics import davies_bouldin_score, silhouette_score
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import MinMaxScaler
+from umap import UMAP
 
 # Download necessary NLTK resources
 nltk.download("punkt", quiet=True)

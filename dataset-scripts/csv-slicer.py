@@ -1,5 +1,6 @@
-import pandas as pd
 import argparse  # For handling command-line arguments
+
+import pandas as pd
 
 
 def extract_random_n_rows(input_csv_path: str, output_csv_path: str, n: int):

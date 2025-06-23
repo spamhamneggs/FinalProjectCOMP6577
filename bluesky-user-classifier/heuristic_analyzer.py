@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-import os
 import argparse
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from typing import Tuple
-from tqdm import tqdm
-import re
 import json
+import os
+import re
+from typing import Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from tqdm import tqdm
 
 # --- Configuration ---
 # Default paths for term databases, can be overridden by command-line arguments
