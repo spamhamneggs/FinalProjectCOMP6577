@@ -12,6 +12,7 @@ members = [
  "bluesky-user-classifier",
  "terms-analyzer-bertopic",
  "bluesky-user-classifier-cloud",
+ "www",
 ]
 
 [dependency-groups]

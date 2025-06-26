@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>How It Works - Bluesky Classifier</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.1/css/all.min.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -27,9 +27,8 @@
         <div class="about-description">
           <p>
             Bluesky Classifier analyzes public posts from Bluesky users to detect linguistic patterns 
-            associated with specific online subcultures. Our system combines heuristic scoring with 
-            machine learning to provide accurate classifications while maintaining transparency in how 
-            decisions are made.
+            associated with specific online subcultures. Our system uses a fine-tuned language model 
+            to provide accurate classifications, leveraging continuous scoring for nuanced, context-aware results.
           </p>
         </div>
         
@@ -47,27 +46,27 @@
             <h3>Fetch & Analyze Posts</h3>
             <p>
               Using Bluesky's ATProto API, we securely fetch the user's most recent posts. 
-              Our system then processes these through both a heuristic scoring system and 
-              our machine learning model.
+              These posts are then processed by our fine-tuned language model, which evaluates 
+              each post using continuous scoring to detect patterns associated with "weeb" and "furry" interests.
             </p>
           </div>
           
           <div class="how-step" data-step="3">
             <h3>Classification Process</h3>
             <p>
-              Our dual-path analysis:
-              <ul style="color: var(--gray); padding-left: 1.5rem; margin-top: 0.5rem;">
-                <li><strong>Heuristic Scoring</strong>: Matches terms against specialized databases</li>
-                <li><strong>ML Analysis</strong>: Uses a fine-tuned Qwen3 model to detect patterns</li>
-              </ul>
+              Our model assigns a primary and (if applicable) secondary classification to the user, 
+              based on the aggregate of post-level scores. The classification is determined by 
+              configurable thresholds for each category, allowing for nuanced distinctions such as 
+              "Slight Weeb" or "Slight Furry" in addition to strong signals.
             </p>
           </div>
           
           <div class="how-step" data-step="4">
             <h3>Generate Results</h3>
             <p>
-              The system combines both analyses to determine primary and secondary classifications. 
-              Results are displayed with heuristic scores to show the confidence level for each category.
+              The system displays the user's primary and secondary classifications, along with 
+              summary statistics and confidence scores for each category. This provides transparency 
+              into how the model arrived at its decision.
             </p>
           </div>
         </div>
@@ -88,15 +87,19 @@
               <span>PyTorch</span>
             </div>
             <div class="tech-item">
+              <i class="fas fa-sailboat"></i>
+              <span>Unsloth</span>
+            </div>
+            <div class="tech-item">
               <i class="fab fa-js"></i>
               <span>JavaScript</span>
             </div>
             <div class="tech-item">
               <i class="fas fa-server"></i>
-              <span>FastAPI</span>
+              <span>Flask</span>
             </div>
             <div class="tech-item">
-              <i class="fab fa-github"></i>
+              <i class="fab fa-bluesky"></i>
               <span>ATProto API</span>
             </div>
           </div>
@@ -134,7 +137,7 @@
         actual affiliations.
       </p>
       <p class="copyright">
-        © 2025 The ""Official"" Bluesky Classifier to catch you in 4k | This is a demo project.
+        © 2025 The ""Official"" Bluesky Classifier to catch you in 4K | This is a demo project.
       </p>
     </div>
   </footer>

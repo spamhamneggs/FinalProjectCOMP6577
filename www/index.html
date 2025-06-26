@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bluesky Classifier</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.1/css/all.min.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -27,7 +27,7 @@
     
     <div class="classifier-container">
       <div class="input-group">
-        <input type="text" id="username" placeholder="Username.bsky.social">
+        <input type="text" id="username" placeholder="username.bsky.social">
         <button id="check-btn">Check</button>
       </div>
       
@@ -46,23 +46,21 @@
           <div class="classification-card primary">
             <h3>Primary Classification</h3>
             <div class="classification-value weeb" id="primary-result">Weeb</div>
-            <p>Based on post content analysis</p>
           </div>
           
           <div class="classification-card secondary">
             <h3>Secondary Classification</h3>
             <div class="classification-value furry" id="secondary-result">Slight Furry</div>
-            <p>Supporting classification signal</p>
           </div>
           
           <div class="scores">
             <div class="score-item">
-              <div class="score-value" id="weeb-score">0.018</div>
-              <div class="score-label">Heuristic Weeb Score</div>
+              <div class="score-value" id="weeb-score">0.00</div>
+              <div class="score-label">Weeb Score</div>
             </div>
             <div class="score-item">
-              <div class="score-value" id="furry-score">0.009</div>
-              <div class="score-label">Heuristic Furry Score</div>
+              <div class="score-value" id="furry-score">0.00</div>
+              <div class="score-label">Furry Score</div>
             </div>
           </div>
         </div>
@@ -88,7 +86,7 @@
   <footer>
     <div class="footer-content">
       <p>Bluesky Classifier uses machine learning to analyze user posts and detect patterns associated with furry and weeb subcultures. Results are based on algorithmic analysis and may not reflect a user's actual affiliations.</p>
-      <p class="copyright">© 2025 The ""Official"" Bluesky Classifier to catch you in 4k | This is a demo project.</p>
+      <p class="copyright">© 2025 The ""Official"" Bluesky Classifier to catch you in 4K | This is a demo project.</p>
     </div>
   </footer>
 

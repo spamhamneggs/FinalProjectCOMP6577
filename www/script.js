@@ -13,16 +13,8 @@ const furryScore     = document.getElementById('furry-score');
 const userCount      = document.getElementById('user-count');
 const postCount      = document.getElementById('post-count');
 
-// Sample classifications for demo - Delete later on
-const sampleClassifications = [
-  { primary: 'Weeb',  secondary: 'Slight Furry', weebScore: 0.018, furryScore: 0.009, primaryClass: 'weeb', secondaryClass: 'furry' },
-  { primary: 'Furry', secondary: 'None',          weebScore: 0.005, furryScore: 0.021, primaryClass: 'furry', secondaryClass: 'normie' },
-  { primary: 'Normie',secondary: 'None',          weebScore: 0.002, furryScore: 0.001, primaryClass: 'normie', secondaryClass: 'none' },
-  { primary: 'Weeb',  secondary: 'None',          weebScore: 0.015, furryScore: 0.003, primaryClass: 'weeb', secondaryClass: 'none' }
-];
-
 // Event Listeners
-checkBtn.addEventListener('click', () => {
+checkBtn.addEventListener('click', async () => {
   const username = usernameInput.value.trim();
   if (!username) {
     alert('Please enter a Bluesky username (e.g., username.bsky.social)');
@@ -30,22 +22,35 @@ checkBtn.addEventListener('click', () => {
   }
   loadingIndicator.style.display = 'block';
   resultContainer.style.display = 'none';
+  statsContainer.style.display = 'none';
 
-  // Replace with API
-  setTimeout(() => {
+  try {
+    const response = await fetch('/api/classify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+    const data = await response.json();
     loadingIndicator.style.display = 'none';
+    if (!response.ok || data.error) {
+      alert(data.error || 'Classification failed.');
+      statsContainer.style.display = 'flex';
+      return;
+    }
     resultContainer.style.display = 'block';
-    statsContainer.style.display = 'none';
     resultUsername.textContent = `@${username}`;
-    const randomResult = sampleClassifications[Math.floor(Math.random() * sampleClassifications.length)];
-    primaryResult.textContent   = randomResult.primary;
-    secondaryResult.textContent = randomResult.secondary;
-    weebScore.textContent       = randomResult.weebScore.toFixed(3);
-    furryScore.textContent      = randomResult.furryScore.toFixed(3);
-    primaryResult.className     = 'classification-value ' + randomResult.primaryClass;
-    secondaryResult.className   = 'classification-value ' + randomResult.secondaryClass;
+    primaryResult.textContent   = data.primary_classification || 'Unknown';
+    secondaryResult.textContent = data.secondary_classification || 'Unknown';
+    weebScore.textContent       = (data.average_weeb_score * 100 ?? 0).toFixed(3);
+    furryScore.textContent      = (data.average_furry_score * 100 ?? 0).toFixed(3);
+    primaryResult.className     = 'classification-value ' + (data.primary_classification?.toLowerCase().replace(/\s/g, '-') || 'unknown');
+    secondaryResult.className   = 'classification-value ' + (data.secondary_classification?.toLowerCase().replace(/\s/g, '-') || 'unknown');
     resultContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, 2000);
+  } catch (err) {
+    loadingIndicator.style.display = 'none';
+    alert('Error connecting to the classifier API.');
+    statsContainer.style.display = 'flex';
+  }
 });
 
 newSearchBtn.addEventListener('click', () => {

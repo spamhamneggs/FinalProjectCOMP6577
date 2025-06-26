@@ -32,6 +32,8 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split  # type: ignore
 from tqdm import tqdm
 
+from unsloth import FastLanguageModel  # Ensure this is available for model loading
+
 load_dotenv()
 
 RANDOM_SEED = 42
@@ -1609,13 +1611,6 @@ if __name__ == "__main__":
     import multiprocessing
 
     multiprocessing.freeze_support()
-    try:
-        from unsloth import FastLanguageModel
-    except ImportError:
-        print(
-            "Error: Unsloth library not found. Please install, e.g., 'pip install \"unsloth[cu1xx-ampere-torch210]\"' or 'pip install unsloth'."
-        )
-        sys.exit(1)
     try:
         from trl import SFTConfig, SFTTrainer
     except ImportError:
