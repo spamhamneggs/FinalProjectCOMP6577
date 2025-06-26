@@ -1,5 +1,7 @@
 # FinalProjectCOMP6577
 
+![RiZZMATAZZ logo](.github/RiZZMATAZZ.png)
+
 COMP6577001 Final Project by Team RiZZMATAZZ.
 
 Team RiZZMATAZZ is:

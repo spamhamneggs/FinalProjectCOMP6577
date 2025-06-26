@@ -4,21 +4,21 @@ This project provides a complete pipeline for classifying Bluesky users based on
 
 The system uses a two-stage approach:
 
-1. **Heuristic Analysis:** A rule-based system calculates "weeb" and "furry" scores for each post based on weighted term lists. This stage is used to generate a large, auto-labeled dataset.
-2. **LLM Fine-Tuning:** A small, efficient language model (e.g., `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`) is fine-tuned on the heuristically labeled data. This model learns to replicate and generalize the classification logic, allowing for nuanced, context-aware classification of new users without relying directly on the heuristic rules at inference time.
+1. **Heuristic Analysis:** A rule-based system calculates "weeb" and "furry" scores for each post based on weighted term lists. This stage is used to generate a large, auto-labeled dataset and to analyze score distributions.
+2. **LLM Fine-Tuning (Continuous Scoring):** A small, efficient language model (e.g., `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`) is fine-tuned on the heuristically labeled data. The model learns to replicate and generalize the classification logic, using **continuous scores** (not fixed cutoffs) for nuanced, context-aware classification of new users. **Thresholds for "weeb" and "furry" are independent and configurable, not percentile-based.**
 
 The project is split into two main scripts:
 
-* `heuristic_analyzer.py`: A tool for analyzing score distributions and determining the optimal score cutoffs for labeling (e.g., what score constitutes a "Slight Weeb" vs. a "Strong Weeb").
-* `classifier.py`: The main application for preprocessing data, fine-tuning the model with fixed cutoffs, evaluating its performance, and classifying live Bluesky users.
+* `heuristic_analyzer.py`: Tool for analyzing score distributions and exploring percentile-based cutoffs for labeling (for research/analysis only).
+* `classifier.py`: Main application for preprocessing data, fine-tuning the model (using continuous scoring), evaluating its performance, and classifying live Bluesky users.
 
 ## Table of Contents
 
 - [Bluesky User Interest Classifier](#bluesky-user-interest-classifier)
   - [Table of Contents](#table-of-contents)
   - [Project Workflow](#project-workflow)
+  - [Thresholds and Scoring](#thresholds-and-scoring)
   - [File Structure](#file-structure)
-  - [Installation (using uv)](#installation-using-uv)
   - [Usage](#usage)
     - [1. (Optional) Analyze Heuristics (`heuristic_analyzer.py`)](#1-optional-analyze-heuristics-heuristic_analyzerpy)
     - [2. Preprocess Data (`classifier.py preprocess`)](#2-preprocess-data-classifierpy-preprocess)
@@ -32,24 +32,50 @@ The project is split into two main scripts:
 A typical end-to-end workflow for this project looks like this:
 
 1. **Prepare Term Databases:** Create `weeb_terms_bertopic.csv` and `furry_terms_bertopic.csv` in `output/terms-analysis-bertopic/`. These files must contain `term` and `combined_score` columns.
-2. **Find Optimal Cutoffs:** Use `heuristic_analyzer.py` on a large, representative dataset of posts to analyze the score distributions and find the ideal score values that correspond to different classification strengths (e.g., the 80th percentile of weeb scores). This will output a `category_thresholds.json` file.
+2. **(Optional) Analyze Score Distributions:** Use `heuristic_analyzer.py` on a large, representative dataset of posts to analyze the score distributions and explore percentile-based cutoffs. This is for research/analysis only; the classifier uses continuous scoring and does **not** require you to set cutoffs.
 3. **Preprocess Raw Data:** Use the `classifier.py preprocess` command to clean and filter a raw CSV dump of Bluesky posts, preparing it for training.
-4. **Fine-tune the LLM:** Use the `classifier.py finetune` command, feeding it the preprocessed data and the **fixed cutoff values** you determined in step 2. This will train and save a new model adapter.
+4. **Fine-tune the LLM:** Use the `classifier.py finetune` command, feeding it the preprocessed data. The model will use continuous scoring logic for labeling and training.
 5. **Evaluate Performance:** Use the `classifier.py evaluate` command to test your fine-tuned model against a hold-out set, generating a classification report and confusion matrix.
 6. **Classify Live Users:** Use the `classifier.py classify` command with your fine-tuned model to fetch a user's posts from Bluesky and determine their primary and secondary interest classifications.
+
+## Thresholds and Scoring
+
+**Classifier thresholds are independent and configurable.**
+
+- The classifier uses **continuous scoring** for both "weeb" and "furry" categories.
+- Thresholds for "slight" and "strong" classification are **not percentile-based** and can be set independently for each category.
+- **Default threshold values** (can be overridden via command-line arguments):
+
+  - `--min_threshold_weeb`: `0.0031`
+  - `--strong_threshold_weeb`: `0.0047`
+  - `--min_threshold_furry`: `0.0034`
+  - `--strong_threshold_furry`: `0.0051`
+
+- You can override these defaults for all relevant commands (`finetune`, `evaluate`, `classify`).
+
+**Example:**
+```bash
+uv run classifier.py finetune \
+  --data_csv processed_posts.csv \
+  --output_dir finetuned_weeb-furry_model_v1 \
+  --min_threshold_weeb 0.0032 \
+  --strong_threshold_weeb 0.0048 \
+  --min_threshold_furry 0.0035 \
+  --strong_threshold_furry 0.0052
+```
 
 ## File Structure
 
 ```txt
 .
-├── classifier.py                 # Main script for training, evaluation, and classification
-├── heuristic_analyzer.py         # Script for analyzing heuristics and finding cutoffs
+├── classifier.py                 # Main script for training, evaluation, and classification (continuous scoring)
+├── heuristic_analyzer.py         # Script for analyzing heuristics and finding cutoffs (for research/analysis)
 ├── output/
 │   ├── terms-analysis-bertopic/
 │   │   ├── weeb_terms_bertopic.csv # Weeb term list with scores
 │   │   └── furry_terms_bertopic.csv # Furry term list with scores
 │   └── heuristic_analysis_results_.../ # Output from heuristic_analyzer.py
-│       ├── category_thresholds.json    # Calculated score cutoffs
+│       ├── category_thresholds.json    # Calculated score cutoffs (for reference)
 │       └── ...                         # Distribution plots and reports
 ├── finetuned_model/                # Default output directory for fine-tuned models
 │   ├── adapter_config.json
@@ -59,34 +85,16 @@ A typical end-to-end workflow for this project looks like this:
 └── README.md                       # This file
 ```
 
-## Installation (using uv)
-
-This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management.
-
-1. Clone the repository:
-
-    ```bash
-    git clone <your-repo-url>
-    cd <your-repo-directory>
-    ```
-
-2. Install the required Python packages using `uv`:
-
-    ```bash
-    # Install base dependencies
-    uv sync
-    ```
-
 ## Usage
 
 Below are detailed instructions for each script and command.
 
 ### 1. (Optional) Analyze Heuristics (`heuristic_analyzer.py`)
 
-This script helps you find the best **absolute score cutoffs** to use for training by analyzing the score distribution across a large dataset and calculating values based on percentiles.
+This script helps you explore **score distributions** and percentile-based cutoffs for labeling by analyzing a large dataset. This is for research/analysis only; the classifier uses continuous scoring and does **not** require you to set cutoffs.
 
 **Example:**
-Find the score values at the 80th percentile for "Normie" and 95th for "Strong" for both categories.
+Analyze score percentiles for both categories.
 
 ```bash
 uv run heuristic_analyzer.py \
@@ -98,23 +106,7 @@ uv run heuristic_analyzer.py \
   --furry-strong-percentile 95
 ```
 
-This will create a directory under `heuristic_analysis_results/` containing plots, reports, and a `category_thresholds.json` file. The JSON file will contain the absolute score values you should use in the `finetune` step.
-
-**Example `category_thresholds.json` output:**
-
-```json
-{
-  "weeb_normie_cutoff": 0.0115,
-  "weeb_strong_cutoff": 0.0521,
-  "furry_normie_cutoff": 0.0145,
-  "furry_strong_cutoff": 0.0633,
-  "weeb_normie_percentile": 77,
-  "weeb_strong_percentile": 87,
-  "furry_normie_percentile": 78,
-  "furry_strong_percentile": 88
-}
-}
-```
+This will create a directory under `heuristic_analysis_results/` containing plots, reports, and a `category_thresholds.json` file. The JSON file contains the absolute score values at the specified percentiles (for reference).
 
 ### 2. Preprocess Data (`classifier.py preprocess`)
 
@@ -130,10 +122,10 @@ uv run classifier.py preprocess \
 
 ### 3. Fine-tune the Model (`classifier.py finetune`)
 
-This is the core training step. It uses the heuristic rules with **fixed, absolute cutoffs** to generate prompt/response pairs on the fly and fine-tune the LLM.
+This is the core training step. It uses the heuristic rules with **continuous scoring** to generate prompt/response pairs on the fly and fine-tune the LLM. **You do not need to provide cutoff values.**  
+**Thresholds for "weeb" and "furry" are independent and can be set via command-line arguments.**
 
 **Example:**
-Use the cutoff values discovered with `heuristic_analyzer.py`.
 
 ```bash
 uv run classifier.py finetune \
@@ -145,17 +137,18 @@ uv run classifier.py finetune \
   --learning_rate 1e-5 \
   --max_training_samples 400000 \
   --test_size 10000 \
-  --weeb-normie-cutoff 0.0115 \
-  --weeb-strong-cutoff 0.0521 \
-  --furry-normie-cutoff 0.0145 \
-  --furry-strong-cutoff 0.0633
+  --min_threshold_weeb 0.0031 \
+  --strong_threshold_weeb 0.0047 \
+  --min_threshold_furry 0.0034 \
+  --strong_threshold_furry 0.0051
 ```
 
 This will train the model and save the LoRA adapters to the `finetuned_weeb-furry_model_v1` directory. It will also automatically run an evaluation at the end.
 
 ### 4. Evaluate the Model (`classifier.py evaluate`)
 
-If you want to re-evaluate a trained model on a different dataset, use this command.
+If you want to re-evaluate a trained model on a different dataset, use this command.  
+**Thresholds are configurable as above.**
 
 **Example:**
 
@@ -164,17 +157,18 @@ uv run classifier.py evaluate \
   --model_path finetuned_weeb-furry_model_v1 \
   --eval_data_csv path/to/evaluation_data.csv \
   --metrics_output_dir evaluation_results \
-  --weeb-normie-cutoff 0.0115 \
-  --weeb-strong-cutoff 0.0521 \
-  --furry-normie-cutoff 0.0145 \
-  --furry-strong-cutoff 0.0633
+  --min_threshold_weeb 0.0031 \
+  --strong_threshold_weeb 0.0047 \
+  --min_threshold_furry 0.0034 \
+  --strong_threshold_furry 0.0051
 ```
 
-This generates a `classification_report.txt` and `confusion_matrix_combined.png` in the specified output directory.
+This generates a `comprehensive_report.txt` and `confusion_matrix_combined.png` in the specified output directory.
 
 ### 5. Classify a User (`classifier.py classify`)
 
-Use your fine-tuned model to classify a live Bluesky user.
+Use your fine-tuned model to classify a live Bluesky user.  
+**Thresholds are configurable as above.**
 
 **Prerequisites:**
 
@@ -188,26 +182,14 @@ uv run classifier.py classify \
   --model_path finetuned_weeb-furry_model_v1 \
   --username pfau.bsky.social \
   --bluesky_user "your-handle.bsky.social" \
-  --bluesky_pass "your-app-password"
+  --bluesky_pass "your-app-password" \
+  --min_threshold_weeb 0.0031 \
+  --strong_threshold_weeb 0.0047 \
+  --min_threshold_furry 0.0034 \
+  --strong_threshold_furry 0.0051
 ```
 
-The script will fetch the user's recent posts, classify each one using the LLM, and determine a final classification based on the most frequent prediction.
-
-**Example Output:**
-
-```txt
-==================================================
-LLM-Only Classification Results for @pfau.bsky.social
-==================================================
-Primary Classification: Weeb
-Secondary Classification: Slight Furry
-Model Post Classifications: 250 posts analyzed
-Prediction distribution:
-  Weeb-Slight Furry: 120 (48.0%)
-  Weeb-None: 80 (32.0%)
-  Normie-None: 50 (20.0%)
-==================================================
-```
+The script will fetch the user's recent posts, classify each one using the LLM (with continuous scoring), and determine a final classification based on the most confident prediction.
 
 ## Configuration
 
