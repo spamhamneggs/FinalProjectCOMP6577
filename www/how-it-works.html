@@ -29,6 +29,10 @@
             Bluesky Classifier analyzes public posts from Bluesky users to detect linguistic patterns 
             associated with specific online subcultures. Our system uses a fine-tuned language model 
             to provide accurate classifications, leveraging continuous scoring for nuanced, context-aware results.
+            <br><br>
+            <strong>
+              Unlike simple rules-based systems, our model considers both the continuous scores (based on term matches) and the actual content/context of each post. The LLM is fine-tuned to use linguistic cues, context, and subtle signals—not just numeric thresholds—to make its predictions.
+            </strong>
           </p>
         </div>
         
@@ -47,7 +51,7 @@
             <p>
               Using Bluesky's ATProto API, we securely fetch the user's most recent posts. 
               These posts are then processed by our fine-tuned language model, which evaluates 
-              each post using continuous scoring to detect patterns associated with "weeb" and "furry" interests.
+              each post using both continuous scoring (from term lists) <strong>and</strong> the post's actual language and context to detect patterns associated with "weeb" and "furry" interests.
             </p>
           </div>
           
@@ -55,8 +59,8 @@
             <h3>Classification Process</h3>
             <p>
               Our model assigns a primary and (if applicable) secondary classification to the user, 
-              based on the aggregate of post-level scores. The classification is determined by 
-              configurable thresholds for each category, allowing for nuanced distinctions such as 
+              based on the aggregate of post-level scores <strong>and</strong> the model's understanding of post content. The classification is determined by 
+              configurable thresholds for each category, but the LLM can also use context and language cues for nuanced distinctions such as 
               "Slight Weeb" or "Slight Furry" in addition to strong signals.
             </p>
           </div>
@@ -106,7 +110,11 @@
           
           <h3 style="margin-top: 2rem;">Understanding Classifications</h3>
           <p>
-            Our system classifies users into three main categories with the following characteristics:
+            Our system classifies users into three main categories with the following characteristics.
+            <br>
+            <strong>
+              Note: Classifications are not based solely on keyword counts or scores—the model uses both the scores and the actual language/context of posts for a more accurate, context-aware result.
+            </strong>
           </p>
           
           <div class="classification-examples">

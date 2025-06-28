@@ -674,6 +674,21 @@ class BlueskyClassifier:
                 for prompt, response in zip(example["prompt"], example["response"])
             ]
 
+        # --- Set eval_strategy/save_strategy to "no" if no eval_data_dicts ---
+        eval_strategy = "epoch"
+        save_strategy = "epoch"
+        eval_dataset = None
+        if eval_data_dicts:
+            eval_dataset = Dataset.from_list(
+                [
+                    {"prompt": d["prompt"], "response": d["response"]}
+                    for d in eval_data_dicts
+                ]
+            )
+        else:
+            eval_strategy = "no"
+            save_strategy = "no"
+
         sft_config = SFTConfig(
             completion_only_loss=False,
             output_dir=output_dir,
@@ -687,8 +702,8 @@ class BlueskyClassifier:
             lr_scheduler_type="cosine",
             max_grad_norm=0.3,
             logging_steps=500,
-            save_strategy="epoch",
-            eval_strategy="epoch",
+            save_strategy=save_strategy,
+            eval_strategy=eval_strategy,
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             dataset_num_proc=1,
@@ -717,6 +732,7 @@ class BlueskyClassifier:
             tokenizer=self.tokenizer,
             args=sft_config,
             train_dataset=sft_train_dataset,
+            eval_dataset=eval_dataset,  # Pass eval_dataset when available
             formatting_func=formatting_func,
         )
 

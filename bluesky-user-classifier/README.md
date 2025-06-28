@@ -5,12 +5,12 @@ This project provides a complete pipeline for classifying Bluesky users based on
 The system uses a two-stage approach:
 
 1. **Heuristic Analysis:** A rule-based system calculates "weeb" and "furry" scores for each post based on weighted term lists. This stage is used to generate a large, auto-labeled dataset and to analyze score distributions.
-2. **LLM Fine-Tuning (Continuous Scoring):** A small, efficient language model (e.g., `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`) is fine-tuned on the heuristically labeled data. The model learns to replicate and generalize the classification logic, using **continuous scores** (not fixed cutoffs) for nuanced, context-aware classification of new users. **Thresholds for "weeb" and "furry" are independent and configurable, not percentile-based.**
+2. **LLM Fine-Tuning (Context-Aware, Continuous Scoring):** A small, efficient language model (e.g., `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`) is fine-tuned on the heuristically labeled data. The model learns to replicate and generalize the classification logic, using **both continuous scores and the actual post content/context** for nuanced, context-aware classification of new users. **Thresholds for "weeb" and "furry" are independent and configurable, not percentile-based.** The LLM is not just a rules engine—it leverages language understanding and context.
 
 The project is split into two main scripts:
 
 * `heuristic_analyzer.py`: Tool for analyzing score distributions and exploring percentile-based cutoffs for labeling (for research/analysis only).
-* `classifier.py`: Main application for preprocessing data, fine-tuning the model (using continuous scoring), evaluating its performance, and classifying live Bluesky users.
+* `classifier.py`: Main application for preprocessing data, fine-tuning the model (using continuous scoring and context), evaluating its performance, and classifying live Bluesky users.
 
 ## Table of Contents
 
@@ -34,7 +34,7 @@ A typical end-to-end workflow for this project looks like this:
 1. **Prepare Term Databases:** Create `weeb_terms_bertopic.csv` and `furry_terms_bertopic.csv` in `output/terms-analysis-bertopic/`. These files must contain `term` and `combined_score` columns.
 2. **(Optional) Analyze Score Distributions:** Use `heuristic_analyzer.py` on a large, representative dataset of posts to analyze the score distributions and explore percentile-based cutoffs. This is for research/analysis only; the classifier uses continuous scoring and does **not** require you to set cutoffs.
 3. **Preprocess Raw Data:** Use the `classifier.py preprocess` command to clean and filter a raw CSV dump of Bluesky posts, preparing it for training.
-4. **Fine-tune the LLM:** Use the `classifier.py finetune` command, feeding it the preprocessed data. The model will use continuous scoring logic for labeling and training.
+4. **Fine-tune the LLM:** Use the `classifier.py finetune` command, feeding it the preprocessed data. The model will use both continuous scoring logic and the actual post content/context for labeling and training.
 5. **Evaluate Performance:** Use the `classifier.py evaluate` command to test your fine-tuned model against a hold-out set, generating a classification report and confusion matrix.
 6. **Classify Live Users:** Use the `classifier.py classify` command with your fine-tuned model to fetch a user's posts from Bluesky and determine their primary and secondary interest classifications.
 
@@ -43,6 +43,7 @@ A typical end-to-end workflow for this project looks like this:
 **Classifier thresholds are independent and configurable.**
 
 - The classifier uses **continuous scoring** for both "weeb" and "furry" categories.
+- The LLM considers both the continuous scores and the actual post content/context for each post.
 - Thresholds for "slight" and "strong" classification are **not percentile-based** and can be set independently for each category.
 - **Default threshold values** (can be overridden via command-line arguments):
 
@@ -68,7 +69,7 @@ uv run classifier.py finetune \
 
 ```txt
 .
-├── classifier.py                 # Main script for training, evaluation, and classification (continuous scoring)
+├── classifier.py                 # Main script for training, evaluation, and classification (continuous scoring + context)
 ├── heuristic_analyzer.py         # Script for analyzing heuristics and finding cutoffs (for research/analysis)
 ├── output/
 │   ├── terms-analysis-bertopic/
@@ -122,7 +123,8 @@ uv run classifier.py preprocess \
 
 ### 3. Fine-tune the Model (`classifier.py finetune`)
 
-This is the core training step. It uses the heuristic rules with **continuous scoring** to generate prompt/response pairs on the fly and fine-tune the LLM. **You do not need to provide cutoff values.**  
+This is the core training step. It uses the heuristic rules with **continuous scoring** to generate prompt/response pairs on the fly and fine-tune the LLM.  
+**The model is trained to use both the continuous scores and the actual post content/context for classification.**  
 **Thresholds for "weeb" and "furry" are independent and can be set via command-line arguments.**
 
 **Example:**
@@ -189,7 +191,7 @@ uv run classifier.py classify \
   --strong_threshold_furry 0.0051
 ```
 
-The script will fetch the user's recent posts, classify each one using the LLM (with continuous scoring), and determine a final classification based on the most confident prediction.
+The script will fetch the user's recent posts, classify each one using the LLM (with continuous scoring and context), and determine a final classification based on the most confident prediction.
 
 ## Configuration
 
