@@ -236,11 +236,12 @@ def process_post_for_training(args) -> Dict[str, Any] | None:
 
     prompt_text_content = str(text)
     prompt = (
-        "Analyze this Bluesky post using the provided scores. "
+        "Analyze this Bluesky post using both the provided scores and the post content. "
         "Respond with:\n"
         "Primary Classification: <label>\n"
         "Secondary Classification: <label>\n"
         "Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n\n"
+        "Consider both the scores and the actual content of the post when making your decision.\n\n"
         f"Weeb Score: {weeb_score:.6f}\n"
         f"Furry Score: {furry_score:.6f}\n"
         f"Post Content: {prompt_text_content[:300]}"
@@ -1138,11 +1139,12 @@ class BlueskyClassifier:
             furry_scores.append(post_furry_score)
 
             prompt = (
-                f"<|user|>\nAnalyze this Bluesky post using the provided scores. "
+                f"<|user|>\nAnalyze this Bluesky post using both the provided scores and the post content. "
                 f"Respond with:\n"
                 f"Primary Classification: <label>\n"
                 f"Secondary Classification: <label>\n"
                 f"Valid labels: Normie, Weeb, Furry, Slight Weeb, Slight Furry, None.\n\n"
+                f"Consider both the scores and the actual content of the post when making your decision.\n\n"
                 f"Weeb Score: {post_weeb_score:.6f}\n"
                 f"Furry Score: {post_furry_score:.6f}\n"
                 f"Post Content: {post_text[:300]}\n<|assistant|>"
