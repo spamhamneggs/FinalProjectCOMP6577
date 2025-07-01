@@ -32,8 +32,6 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split  # type: ignore
 from tqdm import tqdm
 
-from unsloth import FastLanguageModel  # Ensure this is available for model loading
-
 load_dotenv()
 
 RANDOM_SEED = 42
@@ -269,7 +267,7 @@ class BlueskyClassifier:
     def __init__(
         self,
         model_name="unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
-        batch_size=8,
+        batch_size=4,
         min_threshold_weeb: float = 0.0031,
         min_threshold_furry: float = 0.0034,
         strong_threshold_weeb: float = 0.0047,
@@ -372,6 +370,8 @@ class BlueskyClassifier:
         return calculate_category_score(text_content, terms_df)
 
     def setup_model(self, model_name_or_path: str | None = None):
+        from unsloth import FastLanguageModel
+
         load_path = model_name_or_path if model_name_or_path else self.model_name
         print(f"Loading model from: {load_path}")
         try:
@@ -696,7 +696,7 @@ class BlueskyClassifier:
             num_train_epochs=epochs,
             per_device_train_batch_size=self.batch_size,
             gradient_checkpointing=True,
-            gradient_accumulation_steps=4,
+            gradient_accumulation_steps=8,
             learning_rate=learning_rate,
             weight_decay=0.01,
             warmup_ratio=0.1,
@@ -705,10 +705,8 @@ class BlueskyClassifier:
             logging_steps=500,
             save_strategy=save_strategy,
             eval_strategy=eval_strategy,
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
             dataset_num_proc=1,
-            dataloader_num_workers=4,
+            dataloader_num_workers=0,
             save_total_limit=1,
             remove_unused_columns=True,
             report_to="none",
@@ -1327,7 +1325,7 @@ def main():
         "--epochs", type=int, default=3, help="Training epochs"
     )
     finetune_parser.add_argument(
-        "--batch_size", type=int, default=8, help="Training batch size"
+        "--batch_size", type=int, default=4, help="Training batch size"
     )
     finetune_parser.add_argument(
         "--learning_rate", type=float, default=5e-5, help="Learning rate"
@@ -1626,6 +1624,7 @@ def main():
 
 
 if __name__ == "__main__":
+    from unsloth import FastLanguageModel
     import multiprocessing
 
     multiprocessing.freeze_support()
